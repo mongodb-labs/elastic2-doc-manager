@@ -63,6 +63,7 @@ class DocManager(DocManagerBase):
         self.meta_type = meta_type
         self.unique_key = unique_key
         self.chunk_size = chunk_size
+        self.routing = kwargs.get('routing', {})
         if self.auto_commit_interval not in [None, 0]:
             self.run_auto_commit()
         self._formatter = DefaultDocumentFormatter()
@@ -74,6 +75,31 @@ class DocManager(DocManagerBase):
         """Helper method for getting the index and type from a namespace."""
         index, doc_type = namespace.split('.', 1)
         return index.lower(), doc_type
+
+    def _get_parent_id(self, doc_type, doc):
+        """Get parent ID from doc"""
+        if doc_type in self.routing:
+            parent_field = self.routing[doc_type].get('parentField')
+            if not parent_field:
+                return None
+            parent_id = doc.get(parent_field)
+            return self._formatter.transform_value(parent_id)
+
+    def _search_doc_by_id(self, index, doc_type, doc_id):
+        """Search document in Elasticsearch by _id"""
+        result = self.elastic.search(index=index, doc_type=doc_type,
+                                     body={
+                                         'query': {
+                                             'ids': {
+                                                 'type': doc_type,
+                                                 'values': [u(doc_id)]
+                                             }
+                                         }
+                                     })
+        if result['hits']['total'] == 1:
+            return result['hits']['hits'][0]
+        else:
+            return None
 
     def stop(self):
         """Stop the auto-commit thread."""
@@ -131,8 +157,20 @@ class DocManager(DocManagerBase):
         """
         self.commit()
         index, doc_type = self._index_and_mapping(namespace)
-        document = self.elastic.get(index=index, doc_type=doc_type,
-                                    id=u(document_id))
+
+        if doc_type in self.routing and 'parentField' in self.routing[doc_type]:
+            # We can't use get() here and have to do a full search instead.
+            # This is due to the fact that Elasticsearch needs the parent ID to
+            # know where to route the get request. We might not have the parent
+            # ID available in our update request though.
+            document = self._search_doc_by_id(index, doc_type, document_id)
+            if document is None:
+                LOG.error('Could not find document with ID "%s" in Elasticsearch to apply update', u(document_id))
+                return None
+        else:
+            document = self.elastic.get(index=index, doc_type=doc_type,
+                                        id=u(document_id))
+
         updated = self.apply_update(document['_source'], update_spec)
         # _id is immutable in MongoDB, so won't have changed in update
         updated['_id'] = document['_id']
@@ -150,10 +188,18 @@ class DocManager(DocManagerBase):
             "ns": namespace,
             "_ts": timestamp
         }
+
+        parent_id = self._get_parent_id(doc_type, doc)
         # Index the source document, using lowercase namespace as index name.
-        self.elastic.index(index=index, doc_type=doc_type,
-                           body=self._formatter.format_document(doc), id=doc_id,
-                           refresh=(self.auto_commit_interval == 0))
+        if parent_id is None:
+            self.elastic.index(index=index, doc_type=doc_type,
+                               body=self._formatter.format_document(doc), id=doc_id,
+                               refresh=(self.auto_commit_interval == 0))
+        else:
+            self.elastic.index(index=index, doc_type=doc_type,
+                               body=self._formatter.format_document(doc), id=doc_id,
+                               parent=parent_id, refresh=(self.auto_commit_interval == 0))
+
         # Index document metadata with original namespace (mixed upper/lower).
         self.elastic.index(index=self.meta_index_name, doc_type=self.meta_type,
                            body=bson.json_util.dumps(metadata), id=doc_id,
@@ -185,6 +231,11 @@ class DocManager(DocManagerBase):
                         "_ts": timestamp
                     }
                 }
+
+                parent_id = self._get_parent_id(doc_type, doc)
+                if parent_id is not None:
+                    document_action["_parent"] = parent_id
+
                 yield document_action
                 yield document_meta
             if doc is None:
@@ -238,9 +289,16 @@ class DocManager(DocManagerBase):
         doc = self._formatter.format_document(doc)
         doc[self.attachment_field] = base64.b64encode(f.read()).decode()
 
-        self.elastic.index(index=index, doc_type=doc_type,
-                           body=doc, id=doc_id,
-                           refresh=(self.auto_commit_interval == 0))
+        parent_id = self._get_parent_id(doc_type, doc)
+        if parent_id is None:
+            self.elastic.index(index=index, doc_type=doc_type,
+                               body=doc, id=doc_id,
+                               refresh=(self.auto_commit_interval == 0))
+        else:
+            self.elastic.index(index=index, doc_type=doc_type,
+                               body=doc, id=doc_id, parent=parent_id,
+                               refresh=(self.auto_commit_interval == 0))
+
         self.elastic.index(index=self.meta_index_name, doc_type=self.meta_type,
                            body=bson.json_util.dumps(metadata), id=doc_id,
                            refresh=(self.auto_commit_interval == 0))
@@ -249,9 +307,25 @@ class DocManager(DocManagerBase):
     def remove(self, document_id, namespace, timestamp):
         """Remove a document from Elasticsearch."""
         index, doc_type = self._index_and_mapping(namespace)
-        self.elastic.delete(index=index, doc_type=doc_type,
-                            id=u(document_id),
-                            refresh=(self.auto_commit_interval == 0))
+
+        if doc_type in self.routing and 'parentField' in self.routing[doc_type]:
+            # We can't use delete() directly here and have to do a full search first.
+            # This is due to the fact that Elasticsearch needs the parent ID to
+            # know where to route the delete request. We might not have the parent
+            # ID available in our remove request though.
+            document = self._search_doc_by_id(index, doc_type, document_id)
+            if document is None:
+                LOG.error('Could not find document with ID "%s" in Elasticsearch to apply remove', u(document_id))
+                return
+            parent_id = self._get_parent_id(doc_type, document)
+            self.elastic.delete(index=index, doc_type=doc_type,
+                                id=u(document_id), parent=parent_id,
+                                refresh=(self.auto_commit_interval == 0))
+        else:
+            self.elastic.delete(index=index, doc_type=doc_type,
+                                id=u(document_id),
+                                refresh=(self.auto_commit_interval == 0))
+
         self.elastic.delete(index=self.meta_index_name, doc_type=self.meta_type,
                             id=u(document_id),
                             refresh=(self.auto_commit_interval == 0))
