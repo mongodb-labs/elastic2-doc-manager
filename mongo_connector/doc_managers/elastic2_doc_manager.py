@@ -82,7 +82,7 @@ class DocManager(DocManagerBase):
             parent_field = self.routing[doc_type].get('parentField')
             if not parent_field:
                 return None
-            parent_id = doc.get(parent_field)
+            parent_id = doc.pop(parent_field) if parent_field in doc else None
             return self._formatter.transform_value(parent_id)
 
     def _search_doc_by_id(self, index, doc_type, doc_id):
@@ -235,6 +235,7 @@ class DocManager(DocManagerBase):
                 parent_id = self._get_parent_id(doc_type, doc)
                 if parent_id is not None:
                     document_action["_parent"] = parent_id
+                    document_action["_source"] = self._formatter.format_document(doc)
 
                 yield document_action
                 yield document_meta
