@@ -79,9 +79,13 @@ class DocManager(DocManagerBase):
     def _get_parent_id(self, doc_type, doc):
         """Get parent ID from doc"""
         if doc_type in self.routing:
+            if '_parent' in doc:
+                return doc['_parent']
+
             parent_field = self.routing[doc_type].get('parentField')
             if not parent_field:
                 return None
+
             parent_id = doc.pop(parent_field) if parent_field in doc else None
             return self._formatter.transform_value(parent_id)
 
