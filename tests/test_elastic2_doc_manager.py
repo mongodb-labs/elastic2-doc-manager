@@ -26,6 +26,7 @@ from mongo_connector.test_utils import MockGridFSFile, TESTARGS
 from tests import unittest, elastic_pair
 from tests.test_elastic2 import ElasticsearchTestCase
 
+
 class TestElasticDocManager(ElasticsearchTestCase):
     """Unit tests for the Elastic DocManager."""
 
@@ -47,6 +48,24 @@ class TestElasticDocManager(ElasticsearchTestCase):
         doc = self.elastic_doc.update(doc_id, update_spec, *TESTARGS)
         self.assertEqual(doc, {"_id": '1', "c": 3})
 
+    def test_update_child_doc(self):
+        """Test update child document."""
+        doc_id = 1
+        doc = {"_id": doc_id, "a": 1, "b": 2, "parent_id": 3}
+        self.elastic_doc.upsert(doc, *self.PARENT_CHILD_TEST_ARGS)
+        # $set only
+        update_spec = {"$set": {"a": 1, "b": 2}}
+        doc = self.elastic_doc.update(doc_id, update_spec, *self.PARENT_CHILD_TEST_ARGS)
+        self.assertEqual(doc, {"_id": '1', "a": 1, "b": 2})
+        # $unset only
+        update_spec = {"$unset": {"a": True}}
+        doc = self.elastic_doc.update(doc_id, update_spec, *self.PARENT_CHILD_TEST_ARGS)
+        self.assertEqual(doc, {"_id": '1', "b": 2})
+        # mixed $set/$unset
+        update_spec = {"$unset": {"b": True}, "$set": {"c": 3}}
+        doc = self.elastic_doc.update(doc_id, update_spec, *self.PARENT_CHILD_TEST_ARGS)
+        self.assertEqual(doc, {"_id": '1', "c": 3})
+
     def test_upsert(self):
         """Test the upsert method."""
         docc = {'_id': '1', 'name': 'John'}
@@ -58,6 +77,16 @@ class TestElasticDocManager(ElasticsearchTestCase):
         for doc in res:
             self.assertEqual(doc['_id'], '1')
             self.assertEqual(doc['_source']['name'], 'John')
+
+    def test_upsert_with_parent_id(self):
+        """Test the upsert method with parent_id provided."""
+        docc = {'_id': '1', 'name': 'John', 'parent_id': '2'}
+        self.elastic_doc.upsert(docc, *self.PARENT_CHILD_TEST_ARGS)
+        for doc in self._search(doc_type=self.PARENT_CHILD_TEST_TYPE):
+            self.assertEqual(doc['_id'], '1')
+            self.assertEqual(doc['name'], 'John')
+            self.assertEqual(doc['_parent'], '2')
+            self.assertNotIn('parent_id', doc)
 
     def test_bulk_upsert(self):
         """Test the bulk_upsert method."""
@@ -81,6 +110,22 @@ class TestElasticDocManager(ElasticsearchTestCase):
         for i, r in enumerate(returned_ids):
             self.assertEqual(r, 2*i)
 
+    def test_bulk_upsert_with_parent_id(self):
+        """Test the bulk_upsert method with parent_id provided."""
+        self.elastic_doc.bulk_upsert([], *TESTARGS)
+
+        docs = ({"_id": i, "parent_id": i * 2} for i in range(1000))
+        self.elastic_doc.bulk_upsert(docs, *self.PARENT_CHILD_TEST_ARGS)
+        self.elastic_doc.commit()
+        returned_docs = sorted([(int(doc["_id"]), int(doc["_parent"]))
+                                for doc in self._search(doc_type=self.PARENT_CHILD_TEST_TYPE)],
+                               key=lambda x: x[0])
+        self.assertEqual(self._count(), 1000)
+        self.assertEqual(len(returned_docs), 1000)
+        for i, r in enumerate(returned_docs):
+            self.assertEqual(r[0], i)
+            self.assertEqual(r[1], i * 2)
+
     def test_remove(self):
         """Test the remove method."""
         docc = {'_id': '1', 'name': 'John'}
@@ -98,6 +143,17 @@ class TestElasticDocManager(ElasticsearchTestCase):
             body={"query": {"match_all": {}}}
         )["hits"]["hits"]
         res = [x["_source"] for x in res]
+        self.assertEqual(len(res), 0)
+
+    def test_remove_child_doc(self):
+        """Test remove child document."""
+        docc = {'_id': '1', 'name': 'John', 'parent_id': '2'}
+        self.elastic_doc.upsert(docc, *self.PARENT_CHILD_TEST_ARGS)
+        res = [doc for doc in self._search(doc_type=self.PARENT_CHILD_TEST_TYPE)]
+        self.assertEqual(len(res), 1)
+
+        self.elastic_doc.remove(docc['_id'], *self.PARENT_CHILD_TEST_ARGS)
+        res = [doc for doc in self._search(doc_type=self.PARENT_CHILD_TEST_TYPE)]
         self.assertEqual(len(res), 0)
 
     def test_insert_file(self):

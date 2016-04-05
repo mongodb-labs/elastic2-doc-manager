@@ -80,7 +80,7 @@ class DocManager(DocManagerBase):
         """Get parent ID from doc"""
         if doc_type in self.routing:
             if '_parent' in doc:
-                return doc['_parent']
+                return doc.pop('_parent')
 
             parent_field = self.routing[doc_type].get('parentField')
             if not parent_field:
@@ -178,6 +178,8 @@ class DocManager(DocManagerBase):
         updated = self.apply_update(document['_source'], update_spec)
         # _id is immutable in MongoDB, so won't have changed in update
         updated['_id'] = document['_id']
+        if '_parent' in document:
+            updated['_parent'] = document['_parent']
         self.upsert(updated, namespace, timestamp)
         # upsert() strips metadata, so only _id + fields in _source still here
         return updated
@@ -341,6 +343,8 @@ class DocManager(DocManagerBase):
         for hit in scan(self.elastic, query=kwargs.pop('body', None),
                         scroll='10m', **kwargs):
             hit['_source']['_id'] = hit['_id']
+            if '_parent' in hit:
+                hit['_source']['_parent'] = hit['_parent']
             yield hit['_source']
 
     def search(self, start_ts, end_ts):

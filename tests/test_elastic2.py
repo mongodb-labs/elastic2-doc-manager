@@ -28,6 +28,7 @@ sys.path[0:0] = [""]
 from mongo_connector.connector import Connector
 from mongo_connector.doc_managers.elastic2_doc_manager import DocManager
 from mongo_connector.test_utils import (ReplicaSet,
+                                        TESTARGS,
                                         assert_soon,
                                         close_client)
 
@@ -38,25 +39,37 @@ from tests import unittest, elastic_pair
 class ElasticsearchTestCase(unittest.TestCase):
     """Base class for all ES TestCases."""
 
+    PARENT_CHILD_TEST_TYPE = "parent_child_test"
+    PARENT_CHILD_TEST_ARGS = ("test." + PARENT_CHILD_TEST_TYPE, 1)
+
     @classmethod
     def setUpClass(cls):
         cls.elastic_conn = Elasticsearch(hosts=[elastic_pair])
         cls.elastic_doc = DocManager(elastic_pair,
-                                     auto_commit_interval=0)
+                                     auto_commit_interval=0,
+                                     routing={cls.PARENT_CHILD_TEST_TYPE: {"parentField": "parent_id"}})
 
     def setUp(self):
         # Create target index in elasticsearch
-        self.elastic_conn.indices.create(index='test', ignore=400)
+        self.elastic_conn.indices.create(index='test', ignore=400, body={
+            "mappings": {
+                self.PARENT_CHILD_TEST_TYPE: {
+                    "_parent": {
+                        "type": "test"
+                    }
+                }
+            }
+        })
         self.elastic_conn.cluster.health(wait_for_status='yellow',
                                          index='test')
 
     def tearDown(self):
         self.elastic_conn.indices.delete(index='test', ignore=404)
 
-    def _search(self, query=None):
+    def _search(self, query=None, doc_type="test"):
         query = query or {"match_all": {}}
         return self.elastic_doc._stream_search(
-            index="test", doc_type='test',
+            index="test", doc_type=doc_type,
             body={"query": query}
         )
 
