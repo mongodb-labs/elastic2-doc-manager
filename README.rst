@@ -32,9 +32,9 @@ Running the tests
 Requirements
 ~~~~~~~~~~~~
 
-1. Copy of the Elastic 2.x Document Manager Github repository
+1. Copy of the Elastic 2.x Document Manager GitHub repository
 
-  The tests are not included in the package from PyPI and can only be acquired by cloning this repository on Github::
+  The tests are not included in the package from PyPI and can only be acquired by cloning this repository on GitHub::
 
       git clone https://github.com/mongodb-labs/elastic2-doc-manager
 
