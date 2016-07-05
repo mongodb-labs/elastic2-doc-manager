@@ -21,9 +21,11 @@ import base64
 import logging
 import warnings
 
-from threading import Timer
+from threading import Timer,Lock
 
 import bson.json_util
+
+from copy import deepcopy
 
 from elasticsearch import Elasticsearch, exceptions as es_exceptions
 from elasticsearch.helpers import bulk, scan, streaming_bulk
@@ -43,6 +45,7 @@ wrap_exceptions = exception_wrapper({
     es_exceptions.RequestError: errors.OperationFailed})
 
 LOG = logging.getLogger(__name__)
+Formatter = DefaultDocumentFormatter()
 
 
 class DocManager(DocManagerBase):
@@ -58,6 +61,10 @@ class DocManager(DocManagerBase):
                  attachment_field="content", **kwargs):
         self.elastic = Elasticsearch(
             hosts=[url], **kwargs.get('clientOptions', {}))
+        
+        self.BulkBuffer = BulkBuffer(self)
+        self.lock = Lock()
+        
         self.auto_commit_interval = auto_commit_interval
         self.meta_index_name = meta_index_name
         self.meta_type = meta_type
@@ -65,7 +72,6 @@ class DocManager(DocManagerBase):
         self.chunk_size = chunk_size
         if self.auto_commit_interval not in [None, 0]:
             self.run_auto_commit()
-        self._formatter = DefaultDocumentFormatter()
 
         self.has_attachment_mapping = False
         self.attachment_field = attachment_field
@@ -129,17 +135,21 @@ class DocManager(DocManagerBase):
         """Apply updates given in update_spec to the document whose id
         matches that of doc.
         """
-        self.commit()
+
         index, doc_type = self._index_and_mapping(namespace)
-        document = self.elastic.get(index=index, doc_type=doc_type,
-                                    id=u(document_id))
-        updated = self.apply_update(document['_source'], update_spec)
-        # _id is immutable in MongoDB, so won't have changed in update
-        updated['_id'] = document['_id']
-        self.upsert(updated, namespace, timestamp)
+        document = self.BulkBuffer.get_from_sources(index,doc_type,document_id)
+        if document:
+            updated = self.apply_update(document, update_spec)
+            # _id is immutable in MongoDB, so won't have changed in update
+            updated['_id'] = document_id
+            self.upsert(updated, namespace, timestamp)
+        else:
+            updated = {"_id": document_id}
+            self.BulkBuffer.save_update_spec(update_spec)
+            self.upsert(updated, namespace, timestamp)
         # upsert() strips metadata, so only _id + fields in _source still here
         return updated
-
+    
     @wrap_exceptions
     def upsert(self, doc, namespace, timestamp):
         """Insert a document into Elasticsearch."""
@@ -150,16 +160,25 @@ class DocManager(DocManagerBase):
             "ns": namespace,
             "_ts": timestamp
         }
+        
         # Index the source document, using lowercase namespace as index name.
-        self.elastic.index(index=index, doc_type=doc_type,
-                           body=self._formatter.format_document(doc), id=doc_id,
-                           refresh=(self.auto_commit_interval == 0))
+        action = {
+            '_op_type': 'index',
+            '_index': index,
+            '_type': doc_type,
+            '_id': doc_id,
+            '_source': Formatter.format_document(doc)
+        }
         # Index document metadata with original namespace (mixed upper/lower).
-        self.elastic.index(index=self.meta_index_name, doc_type=self.meta_type,
-                           body=bson.json_util.dumps(metadata), id=doc_id,
-                           refresh=(self.auto_commit_interval == 0))
-        # Leave _id, since it's part of the original document
-        doc['_id'] = doc_id
+        meta_action = {
+            '_op_type': 'index',
+            '_index': self.meta_index_name,
+            '_type': self.meta_type,
+            '_id': doc_id,
+            '_source': bson.json_util.dumps(metadata)
+        }
+        
+        self.index(action,meta_action)
 
     @wrap_exceptions
     def bulk_upsert(self, docs, namespace, timestamp):
@@ -174,7 +193,7 @@ class DocManager(DocManagerBase):
                     "_index": index,
                     "_type": doc_type,
                     "_id": doc_id,
-                    "_source": self._formatter.format_document(doc)
+                    "_source": Formatter.format_document(doc)
                 }
                 document_meta = {
                     "_index": self.meta_index_name,
@@ -205,8 +224,10 @@ class DocManager(DocManagerBase):
                     LOG.error(
                         "Could not bulk-upsert document "
                         "into ElasticSearch: %r" % resp)
+            
             if self.auto_commit_interval == 0:
                 self.commit()
+            
         except errors.EmptyDocsError:
             # This can happen when mongo-connector starts up, there is no
             # config file, but nothing to dump
@@ -235,7 +256,7 @@ class DocManager(DocManagerBase):
             '_ts': timestamp,
         }
 
-        doc = self._formatter.format_document(doc)
+        doc = Formatter.format_document(doc)
         doc[self.attachment_field] = base64.b64encode(f.read()).decode()
 
         self.elastic.index(index=index, doc_type=doc_type,
@@ -249,12 +270,22 @@ class DocManager(DocManagerBase):
     def remove(self, document_id, namespace, timestamp):
         """Remove a document from Elasticsearch."""
         index, doc_type = self._index_and_mapping(namespace)
-        self.elastic.delete(index=index, doc_type=doc_type,
-                            id=u(document_id),
-                            refresh=(self.auto_commit_interval == 0))
-        self.elastic.delete(index=self.meta_index_name, doc_type=self.meta_type,
-                            id=u(document_id),
-                            refresh=(self.auto_commit_interval == 0))
+
+        action = {
+            '_op_type': 'delete',
+            '_index': index,
+            '_type': doc_type,
+            '_id': u(document_id)
+        }
+
+        meta_action = {
+            '_op_type': 'delete',
+            '_index': self.meta_index_name,
+            '_type': self.meta_type,
+            '_id': u(document_id)
+        }
+
+        self.index(action, meta_action)
 
     @wrap_exceptions
     def _stream_search(self, *args, **kwargs):
@@ -284,13 +315,30 @@ class DocManager(DocManagerBase):
                 }
             })
 
+    def index(self, action, meta_action):
+        with self.lock:
+            self.BulkBuffer.add_upsert(action,meta_action)
+
+        # Divide by two to account for meta actions
+        if len(self.BulkBuffer.action_buffer) / 2 >= self.chunk_size:
+            self.commit()
+
     def commit(self):
-        """Refresh all Elasticsearch indexes."""
+        """Send bulk requests and clear buffer"""
+        with self.lock:
+            try:
+                action_buffer = self.BulkBuffer.get_buffer()
+                if action_buffer:
+                    successes, errors = bulk(self.elastic, action_buffer)
+            except Exception as e:
+                # Handle errors from bulk indexing request
+                raise
+            
         retry_until_ok(self.elastic.indices.refresh, index="")
 
     def run_auto_commit(self):
         """Periodically commit to the Elastic server."""
-        self.elastic.indices.refresh()
+        self.commit()
         if self.auto_commit_interval not in [None, 0]:
             Timer(self.auto_commit_interval, self.run_auto_commit).start()
 
@@ -316,3 +364,134 @@ class DocManager(DocManagerBase):
         except es_exceptions.RequestError:
             # no documents so ES returns 400 because of undefined _ts mapping
             return None
+        
+class BulkBuffer():
+    def __init__(self,docman):
+        
+        # Parent object
+        self.docman = docman
+        
+        # Action buffer for bulk indexing
+        self.action_buffer = []
+        self.doc_to_get = []
+        
+        # Handler for update_spec variable
+        # Stored here just to not have to edit
+        # upsert function in doc manager
+        self.update_spec = {}
+        
+        # Dictionary of sources
+        # Format: {"_index": {"_type": {"_id": {"_source": actual_source}}}}
+        self.sources = {}
+        
+    def add_upsert(self, action, meta_action):
+        '''Function which stores sources for "insert" actions
+        and decide if for "update" action has to add docs to 
+        get source buffer
+        '''
+        
+        # in case that source is empty, it means that we need
+        # to get that later with multi get API
+        if self.update_spec:
+            doc_update_spec = deepcopy(self.update_spec)
+            self.update_spec = {}
+            self.bulk_index(action, meta_action)
+            
+            # -1 -> to get latest index number
+            # -1 -> to get action instead of meta_action
+            self.add_doc_to_get(action,doc_update_spec,len(self.action_buffer)-2)
+        else:
+            # for delete action there will be no _source
+            if "_source" in action:
+                self.add_to_sources(action)
+            self.bulk_index(action, meta_action)
+            
+    def add_doc_to_get(self,action,update_spec,action_buffer_index):
+        '''Prepare document for MGET elasticsearch API
+        '''
+        doc = {"_index" : action["_index"],
+               "_type" : action["_type"],
+               "_id" : action["_id"]}
+        self.doc_to_get.append((doc,update_spec,action_buffer_index))
+        
+    def get_docs_sources(self):
+        '''Get document sources using MGET elasticsearch API
+        '''
+        docs = [doc for doc,update_spec,buffer_index in self.doc_to_get]
+        
+        retry_until_ok(self.docman.elastic.indices.refresh, index="")
+        documents = self.docman.elastic.mget(body={"docs": docs})
+        return documents
+    
+    def update_sources(self):
+        '''Update local sources based on response from elasticsearch
+        '''
+        
+        documents = self.get_docs_sources()
+        
+        for index,each_doc in enumerate(documents["docs"]):
+            if each_doc["found"]:
+                _,update_spec,action_buffer_index = self.doc_to_get[index]
+                
+                # maybe source already has been taken from elasticsearch
+                # and updated. In that case get source from sources
+                source = self.get_from_sources(each_doc["_index"], each_doc["_type"], each_doc["_id"])
+                if not source:
+                    source = each_doc['_source']
+                updated = self.docman.apply_update(source, update_spec)
+                #Remove _id field from source
+                if "_id" in updated: del updated["_id"]
+                
+                each_doc["_source"] = updated
+                
+                # Everytime update source to keep it up-to-date
+                self.add_to_sources(each_doc)
+                self.action_buffer[action_buffer_index]["_source"] = Formatter.format_document(updated)
+            else:
+                # Document not found in elasticsearch,
+                # Seems like something went wrong during replication
+                pass
+        self.doc_to_get = []
+    
+    def add_to_sources(self,action):
+        '''Store sources locally
+        '''
+        index = action["_index"]
+        doc_type = action["_type"]
+        document_id = action["_id"]
+        new_source = action["_source"]
+        current_type = self.sources.get(index, {}).get(doc_type, {})
+        if current_type:
+            self.sources[index][doc_type][document_id] = new_source
+        else:
+            updated_source = self.sources.get(index,{})
+            updated_source[doc_type] = {document_id : new_source}
+            self.sources[index] = updated_source
+    
+    def get_from_sources(self,index,doc_type,document_id):
+        '''Get source stored locally
+        '''
+        return self.sources.get(index, {}).get(doc_type, {}).get(document_id,{})
+
+    def save_update_spec(self,update_spec):
+        '''Dirty handler for update_spec variable, just to avoid
+        updating of upsert doc manager function
+        '''
+        self.update_spec = update_spec
+
+    def bulk_index(self, action, meta_action):
+        self.action_buffer.append(action)
+        self.action_buffer.append(meta_action)
+            
+    def get_buffer(self):
+        '''Get buffer which needs to be bulked to elasticsearch
+        '''
+        
+        # Get sources for documents which are in elasticsearch
+        # and they are not in local buffer
+        if self.doc_to_get: self.update_sources()
+        
+        buffer = deepcopy(self.action_buffer)
+        self.action_buffer = []
+        self.sources = {}
+        return buffer
