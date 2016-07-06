@@ -79,4 +79,6 @@ In addition, you can be more selective with which tests you run (in Python > 2.6
 Error messages
 ~~~~~~~~~~~~~~
 
+Any documents that fail to be indexed will be logged as error, user intervention will be required in this scenario.
+
 Some of the tests are meant to generate lots of ``ERROR``-level log messages, especially the rollback tests. mongo-connector logs exceptions it encounters while iterating the cursor in the oplog, so we see these in the console output while MongoDB clusters are being torn apart in the tests. As long as all the tests pass with an `OK` message, all is well.
