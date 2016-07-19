@@ -137,7 +137,7 @@ class DocManager(DocManagerBase):
         """
 
         index, doc_type = self._index_and_mapping(namespace)
-        document = self.BulkBuffer.get_from_sources(index,doc_type,document_id)
+        document = self.BulkBuffer.get_from_sources(index,doc_type,u(document_id))
         if document:
             updated = self.apply_update(document, update_spec)
             # _id is immutable in MongoDB, so won't have changed in update
@@ -423,6 +423,7 @@ class BulkBuffer():
         documents = self.docman.elastic.mget(body={"docs": docs})
         return documents
     
+    @wrap_exceptions
     def update_sources(self):
         '''Update local sources based on response from elasticsearch
         '''
@@ -450,7 +451,9 @@ class BulkBuffer():
             else:
                 # Document not found in elasticsearch,
                 # Seems like something went wrong during replication
-                pass
+                self.doc_to_get = []
+                raise errors.OperationFailed(
+                    "mGET: Document id: {} has not been found".format(each_doc["_id"]))
         self.doc_to_get = []
     
     def add_to_sources(self,action):
