@@ -178,7 +178,7 @@ class DocManager(DocManagerBase):
             '_source': bson.json_util.dumps(metadata)
         }
         
-        self.index(action,meta_action)
+        self.index(action,meta_action,doc)
 
     @wrap_exceptions
     def bulk_upsert(self, docs, namespace, timestamp):
@@ -315,9 +315,9 @@ class DocManager(DocManagerBase):
                 }
             })
 
-    def index(self, action, meta_action):
+    def index(self, action, meta_action, doc_source=None):
         with self.lock:
-            self.BulkBuffer.add_upsert(action,meta_action)
+            self.BulkBuffer.add_upsert(action,meta_action,doc_source)
 
         # Divide by two to account for meta actions
         if len(self.BulkBuffer.action_buffer) / 2 >= self.chunk_size:
@@ -384,7 +384,7 @@ class BulkBuffer():
         # Format: {"_index": {"_type": {"_id": {"_source": actual_source}}}}
         self.sources = {}
         
-    def add_upsert(self, action, meta_action):
+    def add_upsert(self, action, meta_action, doc_source):
         '''Function which stores sources for "insert" actions
         and decide if for "update" action has to add docs to 
         get source buffer
@@ -401,9 +401,9 @@ class BulkBuffer():
             # -1 -> to get action instead of meta_action
             self.add_doc_to_get(action,doc_update_spec,len(self.action_buffer)-2)
         else:
-            # for delete action there will be no _source
-            if "_source" in action:
-                self.add_to_sources(action)
+            # for delete action there will be no doc_source
+            if doc_source:
+                self.add_to_sources(action,doc_source)
             self.bulk_index(action, meta_action)
             
     def add_doc_to_get(self,action,update_spec,action_buffer_index):
@@ -440,13 +440,12 @@ class BulkBuffer():
                 if not source:
                     source = each_doc['_source']
                 updated = self.docman.apply_update(source, update_spec)
+                
                 #Remove _id field from source
                 if "_id" in updated: del updated["_id"]
-                
-                each_doc["_source"] = updated
-                
                 # Everytime update source to keep it up-to-date
-                self.add_to_sources(each_doc)
+                self.add_to_sources(each_doc,updated)
+                
                 self.action_buffer[action_buffer_index]["_source"] = Formatter.format_document(updated)
             else:
                 # Document not found in elasticsearch,
@@ -456,13 +455,13 @@ class BulkBuffer():
                     "mGET: Document id: {} has not been found".format(each_doc["_id"]))
         self.doc_to_get = []
     
-    def add_to_sources(self,action):
+    def add_to_sources(self,action,doc_source):
         '''Store sources locally
         '''
         index = action["_index"]
         doc_type = action["_type"]
         document_id = action["_id"]
-        new_source = action["_source"]
+        new_source = doc_source
         current_type = self.sources.get(index, {}).get(doc_type, {})
         if current_type:
             self.sources[index][doc_type][document_id] = new_source
