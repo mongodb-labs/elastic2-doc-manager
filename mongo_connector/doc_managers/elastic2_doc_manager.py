@@ -145,13 +145,12 @@ class DocManager(DocManagerBase):
             self.upsert(updated, namespace, timestamp)
         else:
             updated = {"_id": document_id}
-            self.BulkBuffer.save_update_spec(update_spec)
-            self.upsert(updated, namespace, timestamp)
+            self.upsert(updated, namespace, timestamp, update_spec)
         # upsert() strips metadata, so only _id + fields in _source still here
         return updated
     
     @wrap_exceptions
-    def upsert(self, doc, namespace, timestamp):
+    def upsert(self, doc, namespace, timestamp, update_spec=None):
         """Insert a document into Elasticsearch."""
         index, doc_type = self._index_and_mapping(namespace)
         # No need to duplicate '_id' in source document
@@ -178,7 +177,10 @@ class DocManager(DocManagerBase):
             '_source': bson.json_util.dumps(metadata)
         }
         
-        self.index(action,meta_action,doc)
+        self.index(action,meta_action,doc,update_spec)
+        
+        # Leave _id, since it's part of the original document
+        doc['_id'] = doc_id
 
     @wrap_exceptions
     def bulk_upsert(self, docs, namespace, timestamp):
@@ -315,12 +317,12 @@ class DocManager(DocManagerBase):
                 }
             })
 
-    def index(self, action, meta_action, doc_source=None):
+    def index(self, action, meta_action, doc_source=None, update_spec=None):
         with self.lock:
-            self.BulkBuffer.add_upsert(action,meta_action,doc_source)
+            self.BulkBuffer.add_upsert(action,meta_action,doc_source,update_spec)
 
         # Divide by two to account for meta actions
-        if len(self.BulkBuffer.action_buffer) / 2 >= self.chunk_size:
+        if len(self.BulkBuffer.action_buffer) / 2 >= self.chunk_size or self.auto_commit_interval == 0:
             self.commit()
 
     def commit(self):
@@ -375,16 +377,11 @@ class BulkBuffer():
         self.action_buffer = []
         self.doc_to_get = []
         
-        # Handler for update_spec variable
-        # Stored here just to not have to edit
-        # upsert function in doc manager
-        self.update_spec = {}
-        
         # Dictionary of sources
         # Format: {"_index": {"_type": {"_id": {"_source": actual_source}}}}
         self.sources = {}
         
-    def add_upsert(self, action, meta_action, doc_source):
+    def add_upsert(self, action, meta_action, doc_source, update_spec):
         """
         Function which stores sources for "insert" actions
         and decide if for "update" action has to add docs to 
@@ -393,14 +390,12 @@ class BulkBuffer():
         
         # in case that source is empty, it means that we need
         # to get that later with multi get API
-        if self.update_spec:
-            doc_update_spec = deepcopy(self.update_spec)
-            self.update_spec = {}
+        if update_spec:
             self.bulk_index(action, meta_action)
             
             # -1 -> to get latest index number
             # -1 -> to get action instead of meta_action
-            self.add_doc_to_get(action,doc_update_spec,len(self.action_buffer)-2)
+            self.add_doc_to_get(action,update_spec,len(self.action_buffer)-2)
         else:
             # for delete action there will be no doc_source
             if doc_source:
@@ -464,19 +459,11 @@ class BulkBuffer():
         if current_type:
             self.sources[index][doc_type][document_id] = new_source
         else:
-            updated_source = self.sources.get(index,{})
-            updated_source[doc_type] = {document_id : new_source}
-            self.sources[index] = updated_source
+            self.sources.setdefault(index,{})[doc_type] = {document_id : new_source}
     
     def get_from_sources(self,index,doc_type,document_id):
         """Get source stored locally"""
         return self.sources.get(index, {}).get(doc_type, {}).get(document_id,{})
-
-    def save_update_spec(self,update_spec):
-        '''Dirty handler for update_spec variable, just to avoid
-        updating of upsert doc manager function
-        '''
-        self.update_spec = update_spec
 
     def bulk_index(self, action, meta_action):
         self.action_buffer.append(action)
