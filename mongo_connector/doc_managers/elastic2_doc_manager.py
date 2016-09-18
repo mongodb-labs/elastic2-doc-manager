@@ -157,8 +157,8 @@ class DocManager(DocManagerBase):
         # No need to duplicate '_id' in source document
         doc_id = u(doc.pop("_id"))
         metadata = {
-            "ns": namespace,
-            "_ts": timestamp
+            'ns': namespace,
+            '_ts': timestamp
         }
         
         # Index the source document, using lowercase namespace as index name.
@@ -190,18 +190,18 @@ class DocManager(DocManagerBase):
                 index, doc_type = self._index_and_mapping(namespace)
                 doc_id = u(doc.pop("_id"))
                 document_action = {
-                    "_index": index,
-                    "_type": doc_type,
-                    "_id": doc_id,
-                    "_source": Formatter.format_document(doc)
+                    '_index': index,
+                    '_type': doc_type,
+                    '_id': doc_id,
+                    '_source': Formatter.format_document(doc)
                 }
                 document_meta = {
-                    "_index": self.meta_index_name,
-                    "_type": self.meta_type,
-                    "_id": doc_id,
-                    "_source": {
-                        "ns": namespace,
-                        "_ts": timestamp
+                    '_index': self.meta_index_name,
+                    '_type': self.meta_type,
+                    '_id': doc_id,
+                    '_source': {
+                        'ns': namespace,
+                        '_ts': timestamp
                     }
                 }
                 yield document_action
@@ -385,10 +385,11 @@ class BulkBuffer():
         self.sources = {}
         
     def add_upsert(self, action, meta_action, doc_source):
-        '''Function which stores sources for "insert" actions
+        """
+        Function which stores sources for "insert" actions
         and decide if for "update" action has to add docs to 
         get source buffer
-        '''
+        """
         
         # in case that source is empty, it means that we need
         # to get that later with multi get API
@@ -407,60 +408,57 @@ class BulkBuffer():
             self.bulk_index(action, meta_action)
             
     def add_doc_to_get(self,action,update_spec,action_buffer_index):
-        '''Prepare document for MGET elasticsearch API
-        '''
-        doc = {"_index" : action["_index"],
-               "_type" : action["_type"],
-               "_id" : action["_id"]}
+        """Prepare document for MGET elasticsearch API"""
+        doc = {'_index' : action['_index'],
+               '_type' : action['_type'],
+               '_id' : action['_id']}
         self.doc_to_get.append((doc,update_spec,action_buffer_index))
         
     def get_docs_sources(self):
-        '''Get document sources using MGET elasticsearch API
-        '''
-        docs = [doc for doc,update_spec,buffer_index in self.doc_to_get]
+        """Get document sources using MGET elasticsearch API"""
+        docs = [doc for doc,_,_ in self.doc_to_get]
         
         retry_until_ok(self.docman.elastic.indices.refresh, index="")
-        documents = self.docman.elastic.mget(body={"docs": docs})
+        documents = self.docman.elastic.mget(body={'docs': docs})
         return documents
     
     @wrap_exceptions
     def update_sources(self):
-        '''Update local sources based on response from elasticsearch
-        '''
-        
+        """Update local sources based on response from elasticsearch"""
         documents = self.get_docs_sources()
         
-        for index,each_doc in enumerate(documents["docs"]):
-            if each_doc["found"]:
+        for index,each_doc in enumerate(documents['docs']):
+            if each_doc['found']:
                 _,update_spec,action_buffer_index = self.doc_to_get[index]
                 
                 # maybe source already has been taken from elasticsearch
                 # and updated. In that case get source from sources
-                source = self.get_from_sources(each_doc["_index"], each_doc["_type"], each_doc["_id"])
+                source = self.get_from_sources(each_doc['_index'], each_doc['_type'], each_doc['_id'])
                 if not source:
                     source = each_doc['_source']
                 updated = self.docman.apply_update(source, update_spec)
                 
                 #Remove _id field from source
-                if "_id" in updated: del updated["_id"]
+                if '_id' in updated: del updated['_id']
                 # Everytime update source to keep it up-to-date
                 self.add_to_sources(each_doc,updated)
                 
-                self.action_buffer[action_buffer_index]["_source"] = Formatter.format_document(updated)
+                self.action_buffer[action_buffer_index]['_source'] = Formatter.format_document(updated)
             else:
                 # Document not found in elasticsearch,
                 # Seems like something went wrong during replication
+                # or you tried to update document which while was inserting
+                # didn't contain any field mapped in mongo-connector configuration
                 self.doc_to_get = []
                 raise errors.OperationFailed(
-                    "mGET: Document id: {} has not been found".format(each_doc["_id"]))
+                    "mGET: Document id: {} has not been found".format(each_doc['_id']))
         self.doc_to_get = []
     
     def add_to_sources(self,action,doc_source):
-        '''Store sources locally
-        '''
-        index = action["_index"]
-        doc_type = action["_type"]
-        document_id = action["_id"]
+        """Store sources locally"""
+        index = action['_index']
+        doc_type = action['_type']
+        document_id = action['_id']
         new_source = doc_source
         current_type = self.sources.get(index, {}).get(doc_type, {})
         if current_type:
@@ -471,8 +469,7 @@ class BulkBuffer():
             self.sources[index] = updated_source
     
     def get_from_sources(self,index,doc_type,document_id):
-        '''Get source stored locally
-        '''
+        """Get source stored locally"""
         return self.sources.get(index, {}).get(doc_type, {}).get(document_id,{})
 
     def save_update_spec(self,update_spec):
@@ -486,14 +483,13 @@ class BulkBuffer():
         self.action_buffer.append(meta_action)
             
     def get_buffer(self):
-        '''Get buffer which needs to be bulked to elasticsearch
-        '''
+        """Get buffer which needs to be bulked to elasticsearch"""
         
         # Get sources for documents which are in elasticsearch
         # and they are not in local buffer
         if self.doc_to_get: self.update_sources()
         
-        buffer = deepcopy(self.action_buffer)
+        ES_buffer = deepcopy(self.action_buffer)
         self.action_buffer = []
         self.sources = {}
-        return buffer
+        return ES_buffer
