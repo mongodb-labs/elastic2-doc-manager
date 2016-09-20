@@ -32,7 +32,7 @@ from mongo_connector.test_utils import (ReplicaSet,
                                         close_client)
 
 from mongo_connector.util import retry_until_ok
-from tests import unittest, elastic_pair
+from tests import unittest, elastic_pair, elastic_nodes
 
 
 class ElasticsearchTestCase(unittest.TestCase):
@@ -276,6 +276,14 @@ class TestElastic(ElasticsearchTestCase):
             self.assertNotIn('inf', doc)
             self.assertNotIn('nan', doc)
             self.assertTrue(doc['still_exists'])
+
+class TestElasticMultipleHosts(unittest.TestCase):
+    """Integration tests for mongo-connector + Elasticsearch Cluster."""
+
+    def test_multiple_hosts(self):
+        elastic_doc =  DocManager(elastic_nodes)
+        self.assertEqual(len(elastic_doc.elastic.transport.hosts), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

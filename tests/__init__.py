@@ -28,3 +28,5 @@ else:
 elastic_host = unicode(os.environ.get("ES_HOST", 'localhost'))
 elastic_port = unicode(os.environ.get("ES_PORT", 9200))
 elastic_pair = '%s:%s' % (elastic_host, elastic_port)
+elastic_nodes = [ elastic_pair, '%s:%s' % (elastic_host, unicode(int(elastic_port)+1))]
+
