@@ -86,7 +86,8 @@ class DocManager(DocManagerBase):
             client_options['connection_class'] = es_connection.RequestsHttpConnection
         self.elastic = Elasticsearch(
             hosts=[url], **client_options)
-
+        
+        self._formatter = DefaultDocumentFormatter()
         self.BulkBuffer = BulkBuffer(self)
         self.lock = Lock()
 
@@ -97,7 +98,6 @@ class DocManager(DocManagerBase):
         self.chunk_size = chunk_size
         if self.auto_commit_interval not in [None, 0]:
             self.run_auto_commit()
-        self._formatter = DefaultDocumentFormatter()
 
         self.has_attachment_mapping = False
         self.attachment_field = attachment_field
