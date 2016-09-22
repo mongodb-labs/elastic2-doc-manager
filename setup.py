@@ -2,12 +2,13 @@ try:
     from setuptools import setup
 except ImportError:
     from ez_setup import use_setuptools
+
     use_setuptools()
     from setuptools import setup
 import sys
 
 test_suite = "tests"
-tests_require = ["mongo-orchestration>= 0.2, < 0.4", "requests>=2.5.1"]
+tests_require = ["mongo-orchestration >= 0.2, < 0.4", "requests >= 2.5.1"]
 
 if sys.version_info[:2] == (2, 6):
     # Need unittest2 to run unittests in Python 2.6
@@ -21,7 +22,7 @@ except IOError:
     long_description = None  # Install without README.rst
 
 setup(name='elastic2-doc-manager',
-      version='0.1.0',
+      version='0.2.1.dev0',
       maintainer='mongodb',
       description='Elastic2 plugin for mongo-connector',
       long_description=long_description,
@@ -31,6 +32,7 @@ setup(name='elastic2-doc-manager',
       url='https://github.com/mongodb-labs/elastic2-doc-manager',
       install_requires=['mongo-connector >= 2.3.0', "elasticsearch>=2.0.0,<3.0.0"],
       packages=["mongo_connector", "mongo_connector.doc_managers"],
+      extras_require={'aws': ['boto3 >= 1.4.0', 'requests-aws-sign >= 0.1.1']},
       license="Apache License, Version 2.0",
       classifiers=[
           "Development Status :: 4 - Beta",
@@ -50,4 +52,4 @@ setup(name='elastic2-doc-manager',
       keywords=['mongo-connector', "mongodb", "elastic", "elasticsearch"],
       test_suite=test_suite,
       tests_require=tests_require
-)
+      )

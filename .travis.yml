@@ -15,6 +15,7 @@ install:
 
 before_script:
   - bin/elasticsearch > temp.txt &
+  - sleep 10
   - cd ..
   - mongo-orchestration start
 

@@ -27,8 +27,8 @@ import bson.json_util
 
 from copy import deepcopy
 
-from elasticsearch import Elasticsearch, exceptions as es_exceptions
-from elasticsearch.helpers import bulk, scan, streaming_bulk
+from elasticsearch import Elasticsearch, exceptions as es_exceptions, connection as es_connection
+from elasticsearch.helpers import bulk, scan, streaming_bulk, BulkIndexError
 
 from mongo_connector import errors
 from mongo_connector.compat import u
@@ -38,14 +38,21 @@ from mongo_connector.util import exception_wrapper, retry_until_ok
 from mongo_connector.doc_managers.doc_manager_base import DocManagerBase
 from mongo_connector.doc_managers.formatters import DefaultDocumentFormatter
 
+_HAS_AWS = True
+try:
+    from requests_aws_sign import AWSV4Sign
+    from boto3 import session as aws_session
+except ImportError:
+    _HAS_AWS = False
+
 wrap_exceptions = exception_wrapper({
+    BulkIndexError: errors.OperationFailed,
     es_exceptions.ConnectionError: errors.ConnectionFailed,
     es_exceptions.TransportError: errors.OperationFailed,
     es_exceptions.NotFoundError: errors.OperationFailed,
     es_exceptions.RequestError: errors.OperationFailed})
 
 LOG = logging.getLogger(__name__)
-Formatter = DefaultDocumentFormatter()
 
 
 class DocManager(DocManagerBase):
@@ -59,12 +66,30 @@ class DocManager(DocManagerBase):
                  unique_key='_id', chunk_size=DEFAULT_MAX_BULK,
                  meta_index_name="mongodb_meta", meta_type="mongodb_meta",
                  attachment_field="content", **kwargs):
+        aws = kwargs.get('aws', {'access_id': '', 'secret_key': '', 'region': 'us-east-1'})
+        client_options = kwargs.get('clientOptions', {})
+        if 'aws' in kwargs:
+            if _HAS_AWS is False:
+                raise ConfigurationError('aws extras must be installed to sign Elasticsearch requests')
+            aws_args = kwargs.get('aws', {'region': 'us-east-1'})
+            aws = aws_session.Session()
+            if 'access_id' in aws_args and 'secret_key' in aws_args:
+                aws = aws_session.Session(
+                    aws_access_key_id = aws_args['access_id'],
+                    aws_secret_access_key = aws_args['secret_key'])
+            credentials = aws.get_credentials()
+            region = aws.region_name or aws_args['region']
+            aws_auth = AWSV4Sign(credentials, region, 'es')
+            client_options['http_auth'] = aws_auth
+            client_options['use_ssl'] = True
+            client_options['verify_certs'] = True
+            client_options['connection_class'] = es_connection.RequestsHttpConnection
         self.elastic = Elasticsearch(
-            hosts=[url], **kwargs.get('clientOptions', {}))
-        
+            hosts=[url], **client_options)
+
         self.BulkBuffer = BulkBuffer(self)
         self.lock = Lock()
-        
+
         self.auto_commit_interval = auto_commit_interval
         self.meta_index_name = meta_index_name
         self.meta_type = meta_type
@@ -72,6 +97,7 @@ class DocManager(DocManagerBase):
         self.chunk_size = chunk_size
         if self.auto_commit_interval not in [None, 0]:
             self.run_auto_commit()
+        self._formatter = DefaultDocumentFormatter()
 
         self.has_attachment_mapping = False
         self.attachment_field = attachment_field
@@ -166,7 +192,7 @@ class DocManager(DocManagerBase):
             '_index': index,
             '_type': doc_type,
             '_id': doc_id,
-            '_source': Formatter.format_document(doc)
+            '_source': self._formatter.format_document(doc)
         }
         # Index document metadata with original namespace (mixed upper/lower).
         meta_action = {
@@ -195,7 +221,7 @@ class DocManager(DocManagerBase):
                     '_index': index,
                     '_type': doc_type,
                     '_id': doc_id,
-                    '_source': Formatter.format_document(doc)
+                    '_source': self._formatter.format_document(doc)
                 }
                 document_meta = {
                     '_index': self.meta_index_name,
@@ -226,10 +252,8 @@ class DocManager(DocManagerBase):
                     LOG.error(
                         "Could not bulk-upsert document "
                         "into ElasticSearch: %r" % resp)
-            
             if self.auto_commit_interval == 0:
                 self.commit()
-            
         except errors.EmptyDocsError:
             # This can happen when mongo-connector starts up, there is no
             # config file, but nothing to dump
@@ -258,7 +282,7 @@ class DocManager(DocManagerBase):
             '_ts': timestamp,
         }
 
-        doc = Formatter.format_document(doc)
+        doc = self._formatter.format_document(doc)
         doc[self.attachment_field] = base64.b64encode(f.read()).decode()
 
         self.elastic.index(index=index, doc_type=doc_type,
@@ -438,7 +462,7 @@ class BulkBuffer():
                 # Everytime update source to keep it up-to-date
                 self.add_to_sources(each_doc,updated)
                 
-                self.action_buffer[action_buffer_index]['_source'] = Formatter.format_document(updated)
+                self.action_buffer[action_buffer_index]['_source'] = self.docman._formatter.format_document(updated)
             else:
                 # Document not found in elasticsearch,
                 # Seems like something went wrong during replication
