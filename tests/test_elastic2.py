@@ -110,7 +110,8 @@ class TestElastic(ElasticsearchTestCase):
             os.unlink("oplog.timestamp")
         except OSError:
             pass
-        docman = DocManager(elastic_pair)
+        docman = DocManager(elastic_pair,
+                            auto_commit_interval=0)
         self.connector = Connector(
             mongo_address=self.repl_set.uri,
             ns_set=['test.test'],
