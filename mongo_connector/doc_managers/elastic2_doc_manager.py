@@ -21,7 +21,7 @@ import base64
 import logging
 import warnings
 
-from threading import Timer,Lock
+from threading import Timer, Lock
 
 import bson.json_util
 
@@ -86,7 +86,7 @@ class DocManager(DocManagerBase):
             client_options['connection_class'] = es_connection.RequestsHttpConnection
         self.elastic = Elasticsearch(
             hosts=[url], **client_options)
-        
+
         self._formatter = DefaultDocumentFormatter()
         self.BulkBuffer = BulkBuffer(self)
         self.lock = Lock()
@@ -163,7 +163,9 @@ class DocManager(DocManagerBase):
         """
 
         index, doc_type = self._index_and_mapping(namespace)
-        document = self.BulkBuffer.get_from_sources(index,doc_type,u(document_id))
+        document = self.BulkBuffer.get_from_sources(index,
+                                                    doc_type,
+                                                    u(document_id))
         if document:
             updated = self.apply_update(document, update_spec)
             # _id is immutable in MongoDB, so won't have changed in update
@@ -174,7 +176,7 @@ class DocManager(DocManagerBase):
             self.upsert(updated, namespace, timestamp, update_spec)
         # upsert() strips metadata, so only _id + fields in _source still here
         return updated
-    
+
     @wrap_exceptions
     def upsert(self, doc, namespace, timestamp, update_spec=None):
         """Insert a document into Elasticsearch."""
@@ -185,7 +187,7 @@ class DocManager(DocManagerBase):
             'ns': namespace,
             '_ts': timestamp
         }
-        
+
         # Index the source document, using lowercase namespace as index name.
         action = {
             '_op_type': 'index',
@@ -202,9 +204,9 @@ class DocManager(DocManagerBase):
             '_id': doc_id,
             '_source': bson.json_util.dumps(metadata)
         }
-        
-        self.index(action,meta_action,doc,update_spec)
-        
+
+        self.index(action, meta_action, doc, update_spec)
+
         # Leave _id, since it's part of the original document
         doc['_id'] = doc_id
 
@@ -343,7 +345,7 @@ class DocManager(DocManagerBase):
 
     def index(self, action, meta_action, doc_source=None, update_spec=None):
         with self.lock:
-            self.BulkBuffer.add_upsert(action,meta_action,doc_source,update_spec)
+            self.BulkBuffer.add_upsert(action, meta_action, doc_source, update_spec)
 
         # Divide by two to account for meta actions
         if len(self.BulkBuffer.action_buffer) / 2 >= self.chunk_size or self.auto_commit_interval == 0:
@@ -359,7 +361,7 @@ class DocManager(DocManagerBase):
             except Exception as e:
                 # Handle errors from bulk indexing request
                 raise
-            
+
         retry_until_ok(self.elastic.indices.refresh, index="")
 
     def run_auto_commit(self):
@@ -390,78 +392,84 @@ class DocManager(DocManagerBase):
         except es_exceptions.RequestError:
             # no documents so ES returns 400 because of undefined _ts mapping
             return None
-        
+
+
 class BulkBuffer():
-    def __init__(self,docman):
-        
+
+    def __init__(self, docman):
+
         # Parent object
         self.docman = docman
-        
+
         # Action buffer for bulk indexing
         self.action_buffer = []
         self.doc_to_get = []
-        
+
         # Dictionary of sources
         # Format: {"_index": {"_type": {"_id": {"_source": actual_source}}}}
         self.sources = {}
-        
+
     def add_upsert(self, action, meta_action, doc_source, update_spec):
         """
         Function which stores sources for "insert" actions
         and decide if for "update" action has to add docs to 
         get source buffer
         """
-        
+
         # in case that source is empty, it means that we need
         # to get that later with multi get API
         if update_spec:
             self.bulk_index(action, meta_action)
-            
+
             # -1 -> to get latest index number
             # -1 -> to get action instead of meta_action
-            self.add_doc_to_get(action,update_spec,len(self.action_buffer)-2)
+            self.add_doc_to_get(action, update_spec, len(self.action_buffer)-2)
         else:
             # for delete action there will be no doc_source
             if doc_source:
-                self.add_to_sources(action,doc_source)
+                self.add_to_sources(action, doc_source)
             self.bulk_index(action, meta_action)
-            
-    def add_doc_to_get(self,action,update_spec,action_buffer_index):
+
+    def add_doc_to_get(self, action, update_spec, action_buffer_index):
         """Prepare document for MGET elasticsearch API"""
-        doc = {'_index' : action['_index'],
-               '_type' : action['_type'],
-               '_id' : action['_id']}
-        self.doc_to_get.append((doc,update_spec,action_buffer_index))
-        
+        doc = {'_index': action['_index'],
+               '_type': action['_type'],
+               '_id': action['_id']}
+        self.doc_to_get.append((doc, update_spec, action_buffer_index))
+
     def get_docs_sources(self):
         """Get document sources using MGET elasticsearch API"""
-        docs = [doc for doc,_,_ in self.doc_to_get]
-        
+        docs = [doc for doc, _, _ in self.doc_to_get]
+
         retry_until_ok(self.docman.elastic.indices.refresh, index="")
         documents = self.docman.elastic.mget(body={'docs': docs})
         return documents
-    
+
     @wrap_exceptions
     def update_sources(self):
         """Update local sources based on response from elasticsearch"""
         documents = self.get_docs_sources()
-        
-        for index,each_doc in enumerate(documents['docs']):
+
+        for index, each_doc in enumerate(documents['docs']):
             if each_doc['found']:
-                _,update_spec,action_buffer_index = self.doc_to_get[index]
-                
+                _, update_spec, action_buffer_index = self.doc_to_get[index]
+
                 # maybe source already has been taken from elasticsearch
                 # and updated. In that case get source from sources
-                source = self.get_from_sources(each_doc['_index'], each_doc['_type'], each_doc['_id'])
+                source = self.get_from_sources(each_doc['_index'],
+                                               each_doc['_type'],
+                                               each_doc['_id'])
                 if not source:
                     source = each_doc['_source']
                 updated = self.docman.apply_update(source, update_spec)
-                
-                #Remove _id field from source
-                if '_id' in updated: del updated['_id']
+
+                # Remove _id field from source
+                if '_id' in updated:
+                    del updated['_id']
+
                 # Everytime update source to keep it up-to-date
-                self.add_to_sources(each_doc,updated)
-                
+                self.add_to_sources(each_doc, updated)
+
                 self.action_buffer[action_buffer_index]['_source'] = self.docman._formatter.format_document(updated)
             else:
                 # Document not found in elasticsearch,
@@ -472,8 +480,8 @@ class BulkBuffer():
                 raise errors.OperationFailed(
                     "mGET: Document id: {} has not been found".format(each_doc['_id']))
         self.doc_to_get = []
-    
-    def add_to_sources(self,action,doc_source):
+
+    def add_to_sources(self, action, doc_source):
         """Store sources locally"""
         index = action['_index']
         doc_type = action['_type']
@@ -483,23 +491,24 @@ class BulkBuffer():
         if current_type:
             self.sources[index][doc_type][document_id] = new_source
         else:
-            self.sources.setdefault(index,{})[doc_type] = {document_id : new_source}
-    
-    def get_from_sources(self,index,doc_type,document_id):
+            self.sources.setdefault(index,{})[doc_type] = {document_id: new_source}
+
+    def get_from_sources(self, index, doc_type, document_id):
         """Get source stored locally"""
-        return self.sources.get(index, {}).get(doc_type, {}).get(document_id,{})
+        return self.sources.get(index, {}).get(doc_type, {}).get(document_id, {})
 
     def bulk_index(self, action, meta_action):
         self.action_buffer.append(action)
         self.action_buffer.append(meta_action)
-            
+
     def get_buffer(self):
         """Get buffer which needs to be bulked to elasticsearch"""
-        
+
         # Get sources for documents which are in elasticsearch
         # and they are not in local buffer
-        if self.doc_to_get: self.update_sources()
-        
+        if self.doc_to_get:
+            self.update_sources()
+
         ES_buffer = deepcopy(self.action_buffer)
         self.action_buffer = []
         self.sources = {}
