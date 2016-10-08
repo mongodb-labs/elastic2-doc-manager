@@ -109,7 +109,9 @@ class DocManager(DocManagerBase):
 
     def stop(self):
         """Stop the auto-commit thread."""
-        self.auto_commit_interval = None
+        self.auto_commit_interval = 0
+        # Commit docs from buffer
+        self.commit()
 
     def apply_update(self, doc, update_spec):
         if "$set" not in update_spec and "$unset" not in update_spec:
@@ -119,6 +121,8 @@ class DocManager(DocManagerBase):
 
     @wrap_exceptions
     def handle_command(self, doc, namespace, timestamp):
+        # Flush buffer before handle command
+        self.commit()
         db = namespace.split('.', 1)[0]
         if doc.get('dropDatabase'):
             dbs = self.command_helper.map_db(db)
@@ -354,13 +358,13 @@ class DocManager(DocManagerBase):
     def commit(self):
         """Send bulk requests and clear buffer"""
         with self.lock:
-            try:
-                action_buffer = self.BulkBuffer.get_buffer()
-                if action_buffer:
-                    successes, errors = bulk(self.elastic, action_buffer)
-            except Exception as e:
-                # Handle errors from bulk indexing request
-                raise
+            action_buffer = self.BulkBuffer.get_buffer()
+            if action_buffer:
+                successes, errors = bulk(self.elastic, action_buffer)
+                LOG.debug("Bulk successfully done for %d docs" % successes)
+                if errors:
+                    LOG.error("Error occurred during bulk to ElasticSearch:"
+                              " %r" % errors)
 
         retry_until_ok(self.elastic.indices.refresh, index="")
 
@@ -394,7 +398,7 @@ class DocManager(DocManagerBase):
             return None
 
 
-class BulkBuffer():
+class BulkBuffer(object):
 
     def __init__(self, docman):
 
@@ -425,6 +429,7 @@ class BulkBuffer():
             # -1 -> to get action instead of meta_action
             self.add_doc_to_get(action, update_spec, len(self.action_buffer)-2)
         else:
+            # store source for insert and update operations
             # for delete action there will be no doc_source
             if doc_source:
                 self.add_to_sources(action, doc_source)
@@ -483,15 +488,8 @@ class BulkBuffer():
 
     def add_to_sources(self, action, doc_source):
         """Store sources locally"""
-        index = action['_index']
-        doc_type = action['_type']
-        document_id = action['_id']
-        new_source = doc_source
-        current_type = self.sources.get(index, {}).get(doc_type, {})
-        if current_type:
-            self.sources[index][doc_type][document_id] = new_source
-        else:
-            self.sources.setdefault(index,{})[doc_type] = {document_id: new_source}
+        mapping = self.sources.setdefault(action['_index'], {}).setdefault(action['_type'], {})
+        mapping[action['_id']] = doc_source
 
     def get_from_sources(self, index, doc_type, document_id):
         """Get source stored locally"""

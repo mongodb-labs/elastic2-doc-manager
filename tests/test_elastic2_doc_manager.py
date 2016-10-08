@@ -307,6 +307,47 @@ class TestElasticDocManager(ElasticsearchTestCase):
         self.assertNotIn('test2', self._mappings())
         self.assertNotIn('test3', self._mappings())
 
+    def buffer_and_drop(self):
+        """Insert document and drop collection while doc is in buffer"""
+
+        self.elastic_doc.command_helper = CommandHelper()
+
+        self.elastic_doc.auto_commit_interval = None
+        index = "test3"
+        doc_type = "foo"
+        cmd_args = ('%s.%s' % (index, doc_type), 1)
+
+        doc_id = 1
+        doc = {"_id": doc_id, "name": "bar"}
+        self.elastic_doc.upsert(doc, *cmd_args)
+
+        self.elastic_doc.handle_command({'drop': doc_type}, *cmd_args)
+        time.sleep(3)
+
+        # Commit should be called before command has been handled
+        # Which means that buffer should be empty
+        self.assertFalse(self.elastic_doc.BulkBuffer.get_buffer())
+
+        # After drop, below search should return no results
+        res = list(self.elastic_doc._stream_search(
+            index=index, doc_type=doc_type,
+            body={"query": {"match_all": {}}})
+        )
+        self.assertFalse(res)
+
+        # Test dropDatabase as well
+        # Firstly add document to database again
+        # This time update oc as well
+        self.elastic_doc.upsert(doc, *cmd_args)
+        update_spec = {"$set": {"name": "foo2"}}
+        self.elastic_doc.update(doc_id, update_spec, *cmd_args)
+        self.elastic_doc.handle_command({'dropDatabase': 1}, *cmd_args)
+        time.sleep(1)
+        self.assertFalse(self.elastic_doc.BulkBuffer.get_buffer())
+        self.assertNotIn(index, self._mappings())
+
+        # set auto_commit_interval back to 0
+        self.elastic_doc.auto_commit_interval = 0
 
 if __name__ == '__main__':
     unittest.main()
