@@ -38,8 +38,8 @@ from mongo_connector.doc_managers.formatters import DefaultDocumentFormatter
 
 _HAS_AWS = True
 try:
+    from boto3 import session
     from requests_aws_sign import AWSV4Sign
-    from boto3 import session as aws_session
 except ImportError:
     _HAS_AWS = False
 
@@ -51,6 +51,36 @@ wrap_exceptions = exception_wrapper({
     es_exceptions.RequestError: errors.OperationFailed})
 
 LOG = logging.getLogger(__name__)
+
+DEFAULT_AWS_REGION = 'us-east-1'
+
+
+def convert_aws_args(aws_args):
+    """Convert old style options into arguments to boto3.session.Session."""
+    if not isinstance(aws_args, dict):
+        raise errors.InvalidConfiguration(
+            'Elastic DocManager config option "aws" must be a dict')
+    old_session_kwargs = dict(region='region_name',
+                              access_id='aws_access_key_id',
+                              secret_key='aws_secret_access_key')
+    new_kwargs = {}
+    for arg in aws_args:
+        if arg in old_session_kwargs:
+            new_kwargs[old_session_kwargs[arg]] = aws_args[arg]
+        else:
+            new_kwargs[arg] = aws_args[arg]
+    return new_kwargs
+
+
+def create_aws_auth(aws_args):
+    try:
+        aws_session = session.Session(**convert_aws_args(aws_args))
+    except TypeError as exc:
+        raise errors.InvalidConfiguration(
+            'Elastic DocManager unknown aws config option: %s' % (exc,))
+    return AWSV4Sign(aws_session.get_credentials(),
+                     aws_session.region_name or DEFAULT_AWS_REGION,
+                     'es')
 
 
 class DocManager(DocManagerBase):
@@ -64,26 +94,19 @@ class DocManager(DocManagerBase):
                  unique_key='_id', chunk_size=DEFAULT_MAX_BULK,
                  meta_index_name="mongodb_meta", meta_type="mongodb_meta",
                  attachment_field="content", **kwargs):
-        aws = kwargs.get('aws', {'access_id': '', 'secret_key': '', 'region': 'us-east-1'})
         client_options = kwargs.get('clientOptions', {})
         if 'aws' in kwargs:
-            if _HAS_AWS is False:
-                raise ConfigurationError('aws extras must be installed to sign Elasticsearch requests')
-            aws_args = kwargs.get('aws', {'region': 'us-east-1'})
-            aws = aws_session.Session()
-            if 'access_id' in aws_args and 'secret_key' in aws_args:
-                aws = aws_session.Session(
-                    aws_access_key_id = aws_args['access_id'],
-                    aws_secret_access_key = aws_args['secret_key'])
-            credentials = aws.get_credentials()
-            region = aws.region_name or aws_args['region']
-            aws_auth = AWSV4Sign(credentials, region, 'es')
-            client_options['http_auth'] = aws_auth
+            if not _HAS_AWS:
+                raise errors.InvalidConfiguration(
+                    'aws extras must be installed to sign Elasticsearch '
+                    'requests. Install with: '
+                    'pip install elastic2-doc-manager[aws]')
+            client_options['http_auth'] = create_aws_auth(kwargs['aws'])
             client_options['use_ssl'] = True
             client_options['verify_certs'] = True
-            client_options['connection_class'] = es_connection.RequestsHttpConnection
-        self.elastic = Elasticsearch(
-            hosts=[url], **client_options)
+            client_options['connection_class'] = \
+                es_connection.RequestsHttpConnection
+        self.elastic = Elasticsearch(hosts=[url], **client_options)
         self.auto_commit_interval = auto_commit_interval
         self.meta_index_name = meta_index_name
         self.meta_type = meta_type
