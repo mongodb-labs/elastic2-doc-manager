@@ -66,6 +66,9 @@ class DocManager(DocManagerBase):
                  attachment_field="content", **kwargs):
         aws = kwargs.get('aws', {'access_id': '', 'secret_key': '', 'region': 'us-east-1'})
         client_options = kwargs.get('clientOptions', {})
+        client_options.setdefault('sniff_on_start', True)
+        client_options.setdefault('sniff_on_connection_fail', True)
+        client_options.setdefault('sniffer_timeout', 60)
         if 'aws' in kwargs:
             if _HAS_AWS is False:
                 raise ConfigurationError('aws extras must be installed to sign Elasticsearch requests')
@@ -82,8 +85,10 @@ class DocManager(DocManagerBase):
             client_options['use_ssl'] = True
             client_options['verify_certs'] = True
             client_options['connection_class'] = es_connection.RequestsHttpConnection
+        if type(url) is not list:
+            url = [url]
         self.elastic = Elasticsearch(
-            hosts=[url], **client_options)
+            hosts=url, **client_options)
         self.auto_commit_interval = auto_commit_interval
         self.meta_index_name = meta_index_name
         self.meta_type = meta_type
