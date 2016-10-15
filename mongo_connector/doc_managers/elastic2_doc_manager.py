@@ -25,8 +25,6 @@ from threading import Timer, Lock
 
 import bson.json_util
 
-from copy import deepcopy
-
 from elasticsearch import Elasticsearch, exceptions as es_exceptions, connection as es_connection
 from elasticsearch.helpers import bulk, scan, streaming_bulk, BulkIndexError
 
@@ -507,7 +505,7 @@ class BulkBuffer(object):
         if self.doc_to_get:
             self.update_sources()
 
-        ES_buffer = deepcopy(self.action_buffer)
+        ES_buffer = self.action_buffer
         self.action_buffer = []
         self.sources = {}
         return ES_buffer
