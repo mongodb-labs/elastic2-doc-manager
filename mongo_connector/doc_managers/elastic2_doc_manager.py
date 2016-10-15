@@ -87,6 +87,11 @@ class DocManager(DocManagerBase):
 
         self._formatter = DefaultDocumentFormatter()
         self.BulkBuffer = BulkBuffer(self)
+        # As bulk operation can be done in another thread
+        # lock it needed to prevent access to BulkBuffer
+        # while commiting documents to Elasticsearch
+        # It is because BulkBuffer might get outdated
+        # docs from Elasticsearch if bulk is still ongoing
         self.lock = Lock()
 
         self.auto_commit_interval = auto_commit_interval
@@ -290,12 +295,22 @@ class DocManager(DocManagerBase):
         doc = self._formatter.format_document(doc)
         doc[self.attachment_field] = base64.b64encode(f.read()).decode()
 
-        self.elastic.index(index=index, doc_type=doc_type,
-                           body=doc, id=doc_id,
-                           refresh=(self.auto_commit_interval == 0))
-        self.elastic.index(index=self.meta_index_name, doc_type=self.meta_type,
-                           body=bson.json_util.dumps(metadata), id=doc_id,
-                           refresh=(self.auto_commit_interval == 0))
+        action = {
+            '_op_type': 'index',
+            '_index': index,
+            '_type': doc_type,
+            '_id': doc_id,
+            '_source': doc
+        }
+        meta_action = {
+            '_op_type': 'index',
+            '_index': self.meta_index_name,
+            '_type': self.meta_type,
+            '_id': doc_id,
+            '_source': bson.json_util.dumps(metadata)
+        }
+
+        self.index(action, meta_action)
 
     @wrap_exceptions
     def remove(self, document_id, namespace, timestamp):
