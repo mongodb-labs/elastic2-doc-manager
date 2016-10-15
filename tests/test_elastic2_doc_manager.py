@@ -19,14 +19,17 @@ import time
 
 sys.path[0:0] = [""]
 
+from mongo_connector import errors
 from mongo_connector.command_helper import CommandHelper
-from mongo_connector.doc_managers.elastic2_doc_manager import DocManager
+from mongo_connector.doc_managers.elastic2_doc_manager import (
+    DocManager, _HAS_AWS, convert_aws_args, create_aws_auth)
 from mongo_connector.test_utils import MockGridFSFile, TESTARGS
 from mongo_connector.util import retry_until_ok
 
 from tests import unittest, elastic_pair
 from tests.test_elastic2 import ElasticsearchTestCase
 from elasticsearch.helpers import bulk
+
 
 
 class TestElasticDocManager(ElasticsearchTestCase):
@@ -435,6 +438,40 @@ class TestElasticDocManager(ElasticsearchTestCase):
 
         # set auto_commit_interval back to 0
         self.elastic_doc.auto_commit_interval = 0
+
+class TestElasticDocManagerAWS(unittest.TestCase):
+
+    @unittest.skipIf(_HAS_AWS, 'Cannot test with AWS extension installed')
+    def test_aws_raises_invalid_configuration(self):
+        with self.assertRaises(errors.InvalidConfiguration):
+            DocManager('notimportant', aws={})
+
+    def test_convert_aws_args(self):
+        aws_args = dict(region_name='name',
+                        aws_access_key_id='id',
+                        aws_secret_access_key='key',
+                        aws_session_token='token',
+                        profile_name='profile_name')
+        self.assertEqual(convert_aws_args(aws_args), aws_args)
+
+    def test_convert_aws_args_raises_invalid_configuration(self):
+        with self.assertRaises(errors.InvalidConfiguration):
+            convert_aws_args('not_dict')
+
+    def test_convert_aws_args_old_options(self):
+        self.assertEqual(
+            convert_aws_args(dict(region='name',
+                                  access_id='id',
+                                  secret_key='key')),
+            dict(region_name='name',
+                 aws_access_key_id='id',
+                 aws_secret_access_key='key'))
+
+    @unittest.skipUnless(_HAS_AWS, 'Cannot test without AWS extension')
+    def test_create_aws_auth_raises_invalid_configuration(self):
+        with self.assertRaises(errors.InvalidConfiguration):
+            create_aws_auth({'unknown_option': ''})
+
 
 if __name__ == '__main__':
     unittest.main()
