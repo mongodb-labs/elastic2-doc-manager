@@ -485,12 +485,14 @@ class BulkBuffer(object):
 
             # -1 -> to get latest index number
             # -1 -> to get action instead of meta_action
-            # mark document for update by getting its source
-            # from Elasticsearch
+            # Update document based on source retrieved from ES
             self.add_doc_to_update(action, update_spec, len(self.action_buffer) - 2)
         else:
-            # store source for insert and update operations
-            # for delete action there will be no doc_source
+            # Insert and update operations provide source
+            # Store it in local buffer and use for comming updates
+            # inside same buffer
+            # add_to_sources will not be called for delete operation
+            # as it does not provide doc_source
             if doc_source:
                 self.add_to_sources(action, doc_source)
             self.bulk_index(action, meta_action)
