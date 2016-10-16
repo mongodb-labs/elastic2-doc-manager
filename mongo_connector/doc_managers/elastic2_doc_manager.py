@@ -110,8 +110,9 @@ class DocManager(DocManagerBase):
 
         self._formatter = DefaultDocumentFormatter()
         self.BulkBuffer = BulkBuffer(self)
+
         # As bulk operation can be done in another thread
-        # lock it needed to prevent access to BulkBuffer
+        # lock is needed to prevent access to BulkBuffer
         # while commiting documents to Elasticsearch
         # It is because BulkBuffer might get outdated
         # docs from Elasticsearch if bulk is still ongoing
@@ -194,15 +195,21 @@ class DocManager(DocManagerBase):
 
         index, doc_type = self._index_and_mapping(namespace)
         with self.lock:
+            # Check if document source is stored in local buffer
             document = self.BulkBuffer.get_from_sources(index,
                                                         doc_type,
                                                         u(document_id))
         if document:
+            # Document source collected from local buffer
+            # Perform apply_update on it and then it will be
+            # ready for commiting to Elasticsearch
             updated = self.apply_update(document, update_spec)
             # _id is immutable in MongoDB, so won't have changed in update
             updated['_id'] = document_id
             self.upsert(updated, namespace, timestamp)
         else:
+            # Document source needs to be retrieved from Elasticsearch
+            # before performing update. Pass update_spec to upsert function
             updated = {"_id": document_id}
             self.upsert(updated, namespace, timestamp, update_spec)
         # upsert() strips metadata, so only _id + fields in _source still here
@@ -446,11 +453,15 @@ class BulkBuffer(object):
         self.action_buffer = []
 
         # Docs to update
-        # Format: [ (doc, update_spec, action_buffer index, get_from_ES) ]
+        # Dict stores all documents for which firstly
+        # source has to be retrieved from Elasticsearch
+        # and then apply_update needs to be performed
+        # Format: [ (doc, update_spec, action_buffer_index, get_from_ES) ]
         self.doc_to_update = []
 
         # Below dictionary contains ids of documents
         # which need to be retrieved from Elasticsearch
+        # It prevents from getting same document multiple times from ES
         # Format: {"_index": {"_type": {"_id": True}}}
         self.doc_to_get = {}
 
@@ -465,13 +476,17 @@ class BulkBuffer(object):
         get source buffer
         """
 
-        # in case that source is empty, it means that we need
-        # to get that later with multi get API
+        # Whenever update_spec is provided to this method
+        # it means that doc source needs to be retrieved
+        # from Elasticsearch. It means also that source
+        # is not stored in local buffer
         if update_spec:
             self.bulk_index(action, meta_action)
 
             # -1 -> to get latest index number
             # -1 -> to get action instead of meta_action
+            # mark document for update by getting its source
+            # from Elasticsearch
             self.add_doc_to_update(action, update_spec, len(self.action_buffer) - 2)
         else:
             # store source for insert and update operations
@@ -484,7 +499,6 @@ class BulkBuffer(object):
         """
         Prepare document for update based on Elasticsearch response.
         Set flag if document needs to be retrieved from Elasticsearch
-        using MGET elasticsearch API
         """
 
         doc = {'_index': action['_index'],
@@ -501,7 +515,7 @@ class BulkBuffer(object):
         mapping[action['_id']] = True
 
     def check_doc_to_get_id(self, action):
-        """Checks if document is already marked to get it from Elasticsearch."""
+        """Checks if document is already marked to get it from Elasticsearch"""
         if self.doc_to_get.get(action['_index'], {}).get(action['_type'], {}).get(action['_id'], {}):
             return False
         else:
@@ -532,8 +546,6 @@ class BulkBuffer(object):
                 else:
                     # Document not found in elasticsearch,
                     # Seems like something went wrong during replication
-                    # or you tried to update document which while was inserting
-                    # didn't contain any field mapped in mongo-connector configuration
                     self.doc_to_get = []
                     raise errors.OperationFailed(
                         "mGET: Document id: {} has not been found".format(doc['_id']))
@@ -578,7 +590,7 @@ class BulkBuffer(object):
     def get_buffer(self):
         """Get buffer which needs to be bulked to elasticsearch"""
 
-        # Get sources for documents which are in elasticsearch
+        # Get sources for documents which are in Elasticsearch
         # and they are not in local buffer
         if self.doc_to_update:
             self.update_sources()

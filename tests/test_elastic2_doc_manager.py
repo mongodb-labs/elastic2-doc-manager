@@ -31,7 +31,6 @@ from tests.test_elastic2 import ElasticsearchTestCase
 from elasticsearch.helpers import bulk
 
 
-
 class TestElasticDocManager(ElasticsearchTestCase):
     """Unit tests for the Elastic DocManager."""
 
@@ -388,7 +387,7 @@ class TestElasticDocManager(ElasticsearchTestCase):
 
         # Test dropDatabase as well
         # Firstly add document to database again
-        # This time update oc as well
+        # This time update doc as well
         self.elastic_doc.upsert(doc, *cmd_args)
         update_spec = {"$set": {"name": "foo2"}}
         self.elastic_doc.update(doc_id, update_spec, *cmd_args)
@@ -438,6 +437,7 @@ class TestElasticDocManager(ElasticsearchTestCase):
 
         # set auto_commit_interval back to 0
         self.elastic_doc.auto_commit_interval = 0
+
 
 class TestElasticDocManagerAWS(unittest.TestCase):
 
