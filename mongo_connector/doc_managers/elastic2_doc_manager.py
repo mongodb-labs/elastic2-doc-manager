@@ -323,7 +323,7 @@ class DocManager(DocManagerBase):
             index=self.meta_index_name,
             body={
                 "query": {
-                    "filtered": {
+                    "bool": {
                         "filter": {
                             "range": {
                                 "_ts": {"gte": start_ts, "lte": end_ts}
