@@ -113,13 +113,14 @@ class DocManager(DocManagerBase):
             url = [url]
         self.elastic = Elasticsearch(hosts=url, **client_options)
         self.auto_commit_interval = auto_commit_interval
-        self.meta_index_name = meta_index_name
+        self.meta_index_name = kwargs.get('meta_index_name', meta_index_name)
         self.meta_type = meta_type
         self.unique_key = unique_key
         self.chunk_size = chunk_size
         if self.auto_commit_interval not in [None, 0]:
             self.run_auto_commit()
         self._formatter = DefaultDocumentFormatter()
+        self._index = kwargs.get('index', '')
 
         self.has_attachment_mapping = False
         self.attachment_field = attachment_field
@@ -127,6 +128,8 @@ class DocManager(DocManagerBase):
     def _index_and_mapping(self, namespace):
         """Helper method for getting the index and type from a namespace."""
         index, doc_type = namespace.split('.', 1)
+        if not self._index == '':
+            index = self._index
         return index.lower(), doc_type
 
     def stop(self):

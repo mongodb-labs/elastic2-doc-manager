@@ -27,6 +27,21 @@ For information on running mongo-connector with elastic, please see https://gith
 
 .. note:: Please note that before mongo-connector version 2.2.2, the elastic doc manager was packaged with mongo-connector and only supported Elastic 1.x.
 
+Configuration
+~~~~~~~~~~~~
+Example config JSON body for this DocManager::
+
+  "docManagers": [
+    {
+      "docManager": "elastic2_doc_manager",
+      "targetURL": "localhost:9200",
+      "args": {
+        "meta_index_name": "vendop_v5_meta",
+        "index": "vendop_v5"
+      }
+    }
+  ]
+
 Running the tests
 -----------------
 Requirements
