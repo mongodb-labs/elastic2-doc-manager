@@ -318,7 +318,7 @@ class TestElasticDocManager(ElasticsearchTestCase):
         self.elastic_doc.command_helper = CommandHelper()
 
         self.elastic_doc.handle_command({'create': 'test2'}, *cmd_args)
-        time.sleep(1)
+        retry_until_ok(self.elastic_conn.indices.refresh, index="")
         self.assertIn('test2', self._mappings('test'))
 
         docs = [
@@ -341,7 +341,7 @@ class TestElasticDocManager(ElasticsearchTestCase):
             self.assertTrue(d in res)
 
         self.elastic_doc.handle_command({'drop': 'test2'}, *cmd_args)
-        time.sleep(3)
+        retry_until_ok(self.elastic_conn.indices.refresh, index="")
         res = list(self.elastic_doc._stream_search(
             index="test", doc_type='test2',
             body={"query": {"match_all": {}}})
@@ -350,9 +350,9 @@ class TestElasticDocManager(ElasticsearchTestCase):
 
         self.elastic_doc.handle_command({'create': 'test2'}, *cmd_args)
         self.elastic_doc.handle_command({'create': 'test3'}, *cmd_args)
-        time.sleep(1)
+        retry_until_ok(self.elastic_conn.indices.refresh, index="")
         self.elastic_doc.handle_command({'dropDatabase': 1}, *cmd_args)
-        time.sleep(1)
+        retry_until_ok(self.elastic_conn.indices.refresh, index="")
         self.assertNotIn('test', self._indices())
         self.assertNotIn('test2', self._mappings())
         self.assertNotIn('test3', self._mappings())
@@ -372,7 +372,7 @@ class TestElasticDocManager(ElasticsearchTestCase):
         self.elastic_doc.upsert(doc, *cmd_args)
 
         self.elastic_doc.handle_command({'drop': doc_type}, *cmd_args)
-        time.sleep(3)
+        retry_until_ok(self.elastic_conn.indices.refresh, index="")
 
         # Commit should be called before command has been handled
         # Which means that buffer should be empty
@@ -392,48 +392,9 @@ class TestElasticDocManager(ElasticsearchTestCase):
         update_spec = {"$set": {"name": "foo2"}}
         self.elastic_doc.update(doc_id, update_spec, *cmd_args)
         self.elastic_doc.handle_command({'dropDatabase': 1}, *cmd_args)
-        time.sleep(1)
+        retry_until_ok(self.elastic_conn.indices.refresh, index="")
         self.assertFalse(self.elastic_doc.BulkBuffer.get_buffer())
         self.assertNotIn(index, self._mappings())
-
-        # set auto_commit_interval back to 0
-        self.elastic_doc.auto_commit_interval = 0
-
-    def test_if_multi_get_is_realtime(self):
-        """
-        It is mentioned in ES documentation that Get API
-        is realtime by default:
-        https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-get.html#realtime
-        Which means that refresh doesn't have to be called
-        to get most recent document source. Unfortunatelly
-        I can't find similar note for multi Get API.
-        This test is to proof that mGet is realtime as well 
-        """
-
-        # If testing with BulkBuffer, auto_commit_interval
-        # needs to be None to not clear locally stored sources
-        self.elastic_doc.auto_commit_interval = None
-
-        doc_id = 1
-        doc = {"_id": doc_id, "name": "John", "a": 0}
-        self.elastic_doc.upsert(doc, *TESTARGS)
-
-        update_spec = {"$set": {"a": 10, "b": 20}}
-        doc = self.elastic_doc.update(doc_id, update_spec, *TESTARGS)
-
-        # Commit updates to ES but without performing refresh
-        action_buffer = self.elastic_doc.BulkBuffer.get_buffer()
-        bulk(self.elastic_doc.elastic, action_buffer, refresh=False)
-
-        index, doc_type = TESTARGS[0].split(".")
-        doc_to_get = {'_index': index,
-                      '_type': doc_type,
-                      '_id': doc['_id']}
-        doc_from_ES = self.elastic_doc.elastic.mget(body={'docs': [doc_to_get]})["docs"][0]
-
-        self.assertEqual(doc_from_ES["_source"]["name"], "John")
-        self.assertEqual(doc_from_ES["_source"]["a"], 10)
-        self.assertEqual(doc_from_ES["_source"]["b"], 20)
 
         # set auto_commit_interval back to 0
         self.elastic_doc.auto_commit_interval = 0

@@ -402,13 +402,16 @@ class DocManager(DocManagerBase):
     def commit(self):
         """Send bulk requests and clear buffer"""
         with self.lock:
-            action_buffer = self.BulkBuffer.get_buffer()
-            if action_buffer:
-                successes, errors = bulk(self.elastic, action_buffer)
-                LOG.debug("Bulk successfully done for %d docs" % successes)
-                if errors:
-                    LOG.error("Error occurred during bulk to ElasticSearch:"
-                              " %r" % errors)
+            try:
+                action_buffer = self.BulkBuffer.get_buffer()
+                if action_buffer:
+                    successes, errors = bulk(self.elastic, action_buffer)
+                    LOG.debug("Bulk successfully done for %d docs" % successes)
+                    if errors:
+                        LOG.error("Error occurred during bulk to ElasticSearch:"
+                                  " %r" % errors)
+            except Exception as _:
+                LOG.exception("Exception while commiting to Elasticsearch")
 
         retry_until_ok(self.elastic.indices.refresh, index="")
 
@@ -508,30 +511,33 @@ class BulkBuffer(object):
                '_id': action['_id']}
 
         # If get_from_ES == True -> get document's source from Elasticsearch
-        get_from_ES = self.check_doc_to_get_id(action)
+        get_from_ES = self.should_get_id(action)
         self.doc_to_update.append((doc, update_spec, action_buffer_index, get_from_ES))
 
-    def set_doc_to_get_id(self, action):
-        """Mark document that its source will be retrieved from Elasticsearch"""
-        mapping = self.doc_to_get.setdefault(action['_index'], {}).setdefault(action['_type'], {})
-        mapping[action['_id']] = True
-
-    def check_doc_to_get_id(self, action):
-        """Checks if document is already marked to get it from Elasticsearch"""
-        if self.doc_to_get.get(action['_index'], {}).get(action['_type'], {}).get(action['_id'], {}):
+    def should_get_id(self, action):
+        """
+        Mark document to retrieve its source from Elasticsearch.
+        Returns:
+            True - if marking document for the first time in this bulk
+            False - if document has been already marked
+        """
+        mapping_ids = self.doc_to_get.setdefault(
+            action['_index'], {}).setdefault(action['_type'], set())
+        if action['_id'] in mapping_ids:
+            # There is an update on this id already
             return False
         else:
-            self.set_doc_to_get_id(action)
+            mapping_ids.add(action['_id'])
             return True
 
     def get_docs_sources_from_ES(self):
         """Get document sources using MGET elasticsearch API"""
         docs = [doc for doc, _, _, get_from_ES in self.doc_to_update if get_from_ES]
         if docs:
-            documents = self.docman.elastic.mget(body={'docs': docs})
+            documents = self.docman.elastic.mget(body={'docs': docs}, realtime=True)
             return iter(documents['docs'])
         else:
-            return []
+            return iter([])
 
     @wrap_exceptions
     def update_sources(self):
@@ -539,7 +545,6 @@ class BulkBuffer(object):
         ES_documents = self.get_docs_sources_from_ES()
 
         for doc, update_spec, action_buffer_index, get_from_ES in self.doc_to_update:
-
             if get_from_ES:
                 # Update source based on response from ES
                 ES_doc = next(ES_documents)
@@ -548,15 +553,25 @@ class BulkBuffer(object):
                 else:
                     # Document not found in elasticsearch,
                     # Seems like something went wrong during replication
-                    self.doc_to_get = []
-                    raise errors.OperationFailed(
-                        "mGET: Document id: {} has not been found".format(doc['_id']))
+                    LOG.error("mGET: Document id: {} has not been found "
+                              "in Elasticsearch. Due to that "
+                              "following update failed: {}".format(doc['_id'],
+                                                                   update_spec))
+                    self.reset_action(action_buffer_index)
+                    continue
             else:
                 # Get source stored locally before applying update
                 # as it is up-to-date
                 source = self.get_from_sources(doc['_index'],
                                                doc['_type'],
                                                doc['_id'])
+                if not source:
+                    LOG.error("mGET: Document id: {} has not been found "
+                              "in local sources. Due to that following "
+                              "update failed: {}".format(doc["_id"],
+                                                         update_spec))
+                    self.reset_action(action_buffer_index)
+                    continue
 
             updated = self.docman.apply_update(source, update_spec)
 
@@ -568,6 +583,14 @@ class BulkBuffer(object):
             self.add_to_sources(doc, updated)
 
             self.action_buffer[action_buffer_index]['_source'] = self.docman._formatter.format_document(updated)
+
+        # Remove empty actions if there were errors
+        self.action_buffer = [each_action for each_action in self.action_buffer if each_action]
+
+    def reset_action(self, action_buffer_index):
+        """Reset specific action as update failed"""
+        self.action_buffer[action_buffer_index] = {}
+        self.action_buffer[action_buffer_index + 1] = {}
 
     def add_to_sources(self, action, doc_source):
         """Store sources locally"""
