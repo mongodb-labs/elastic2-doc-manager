@@ -56,16 +56,19 @@ class TestElasticDocManager(ElasticsearchTestCase):
         doc = {"_id": doc_id, "a": 1, "b": 2, "parent_id": 3}
         self.elastic_doc.upsert(doc, *self.PARENT_CHILD_TEST_ARGS)
         # $set only
-        update_spec = {"$set": {"a": 1, "b": 2}}
-        doc = self.elastic_doc.update(doc_id, update_spec, *self.PARENT_CHILD_TEST_ARGS)
-        self.assertEqual(doc, {"_id": '1', "a": 1, "b": 2})
+        update_spec = {"$set": {"a": 4, "b": 5}}
+        doc = self.elastic_doc.update(doc_id, update_spec,
+                                      *self.PARENT_CHILD_TEST_ARGS)
+        self.assertEqual(doc, {"_id": '1', "a": 4, "b": 5})
         # $unset only
         update_spec = {"$unset": {"a": True}}
-        doc = self.elastic_doc.update(doc_id, update_spec, *self.PARENT_CHILD_TEST_ARGS)
-        self.assertEqual(doc, {"_id": '1', "b": 2})
+        doc = self.elastic_doc.update(doc_id, update_spec,
+                                      *self.PARENT_CHILD_TEST_ARGS)
+        self.assertEqual(doc, {"_id": '1', "b": 5})
         # mixed $set/$unset
         update_spec = {"$unset": {"b": True}, "$set": {"c": 3}}
-        doc = self.elastic_doc.update(doc_id, update_spec, *self.PARENT_CHILD_TEST_ARGS)
+        doc = self.elastic_doc.update(doc_id, update_spec,
+                                      *self.PARENT_CHILD_TEST_ARGS)
         self.assertEqual(doc, {"_id": '1', "c": 3})
 
     def test_upsert(self):
@@ -84,11 +87,13 @@ class TestElasticDocManager(ElasticsearchTestCase):
         """Test the upsert method with parent_id provided."""
         docc = {'_id': '1', 'name': 'John', 'parent_id': '2'}
         self.elastic_doc.upsert(docc, *self.PARENT_CHILD_TEST_ARGS)
-        for doc in self._search(doc_type=self.PARENT_CHILD_TEST_TYPE):
-            self.assertEqual(doc['_id'], '1')
-            self.assertEqual(doc['name'], 'John')
-            self.assertEqual(doc['_parent'], '2')
-            self.assertNotIn('parent_id', doc)
+        docs = list(self._search(doc_type=self.PARENT_CHILD_TEST_TYPE))
+        self.assertEqual(len(docs), 1)
+        doc = docs[0]
+        self.assertEqual(doc['_id'], '1')
+        self.assertEqual(doc['name'], 'John')
+        self.assertEqual(doc['_parent'], '2')
+        self.assertNotIn('parent_id', doc)
 
     def test_bulk_upsert(self):
         """Test the bulk_upsert method."""
@@ -119,9 +124,9 @@ class TestElasticDocManager(ElasticsearchTestCase):
         docs = ({"_id": i, "parent_id": i * 2} for i in range(1000))
         self.elastic_doc.bulk_upsert(docs, *self.PARENT_CHILD_TEST_ARGS)
         self.elastic_doc.commit()
-        returned_docs = sorted([(int(doc["_id"]), int(doc["_parent"]))
-                                for doc in self._search(doc_type=self.PARENT_CHILD_TEST_TYPE)],
-                               key=lambda x: x[0])
+        returned_docs = sorted(
+            (int(doc["_id"]), int(doc["_parent"]))
+            for doc in self._search(doc_type=self.PARENT_CHILD_TEST_TYPE))
         self.assertEqual(self._count(), 1000)
         self.assertEqual(len(returned_docs), 1000)
         for i, r in enumerate(returned_docs):
@@ -151,11 +156,11 @@ class TestElasticDocManager(ElasticsearchTestCase):
         """Test remove child document."""
         docc = {'_id': '1', 'name': 'John', 'parent_id': '2'}
         self.elastic_doc.upsert(docc, *self.PARENT_CHILD_TEST_ARGS)
-        res = [doc for doc in self._search(doc_type=self.PARENT_CHILD_TEST_TYPE)]
+        res = list(self._search(doc_type=self.PARENT_CHILD_TEST_TYPE))
         self.assertEqual(len(res), 1)
 
         self.elastic_doc.remove(docc['_id'], *self.PARENT_CHILD_TEST_ARGS)
-        res = [doc for doc in self._search(doc_type=self.PARENT_CHILD_TEST_TYPE)]
+        res = list(self._search(doc_type=self.PARENT_CHILD_TEST_TYPE))
         self.assertEqual(len(res), 0)
 
     def test_insert_file(self):

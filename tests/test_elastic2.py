@@ -45,9 +45,9 @@ class ElasticsearchTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.elastic_conn = Elasticsearch(hosts=[elastic_pair])
-        cls.elastic_doc = DocManager(elastic_pair,
-                                     auto_commit_interval=0,
-                                     routing={cls.PARENT_CHILD_TEST_TYPE: {"parentField": "parent_id"}})
+        cls.elastic_doc = DocManager(
+            elastic_pair, auto_commit_interval=0, routing={
+                cls.PARENT_CHILD_TEST_TYPE: {"parentField": "parent_id"}})
 
     def setUp(self):
         # Create target index in elasticsearch
