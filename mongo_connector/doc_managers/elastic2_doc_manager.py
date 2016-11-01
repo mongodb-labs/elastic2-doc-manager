@@ -553,10 +553,9 @@ class BulkBuffer(object):
                 else:
                     # Document not found in elasticsearch,
                     # Seems like something went wrong during replication
-                    LOG.error("mGET: Document id: {} has not been found "
+                    LOG.error("mGET: Document id: %s has not been found "
                               "in Elasticsearch. Due to that "
-                              "following update failed: {}".format(doc['_id'],
-                                                                   update_spec))
+                              "following update failed: %s", doc['_id'], update_spec)
                     self.reset_action(action_buffer_index)
                     continue
             else:
@@ -566,10 +565,9 @@ class BulkBuffer(object):
                                                doc['_type'],
                                                doc['_id'])
                 if not source:
-                    LOG.error("mGET: Document id: {} has not been found "
+                    LOG.error("mGET: Document id: %s has not been found "
                               "in local sources. Due to that following "
-                              "update failed: {}".format(doc["_id"],
-                                                         update_spec))
+                              "update failed: %s", doc["_id"], update_spec)
                     self.reset_action(action_buffer_index)
                     continue
 
