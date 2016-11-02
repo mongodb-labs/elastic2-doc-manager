@@ -46,8 +46,8 @@ class ElasticsearchTestCase(unittest.TestCase):
     def setUpClass(cls):
         cls.elastic_conn = Elasticsearch(hosts=[elastic_pair])
         cls.elastic_doc = DocManager(
-            elastic_pair, auto_commit_interval=0, routing={
-                cls.PARENT_CHILD_TEST_TYPE: {"parentField": "parent_id"}})
+            elastic_pair, auto_commit_interval=0, routing={'test': {
+                cls.PARENT_CHILD_TEST_TYPE: {"parentField": "parent_id"}}})
 
     def setUp(self):
         # Create target index in elasticsearch
@@ -65,6 +65,8 @@ class ElasticsearchTestCase(unittest.TestCase):
 
     def tearDown(self):
         self.elastic_conn.indices.delete(index='test', ignore=404)
+        self.elastic_conn.indices.delete(
+            index=self.elastic_doc.meta_index_name, ignore=404)
 
     def _search(self, query=None, doc_type="test"):
         query = query or {"match_all": {}}

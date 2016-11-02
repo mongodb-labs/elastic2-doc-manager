@@ -147,12 +147,11 @@ class DocManager(DocManagerBase):
         if parent_field is None:
             return None
 
-        parent_id = doc.pop(parent_field) if parent_field in doc else None
-        return self._formatter.transform_value(parent_id)
+        return self._formatter.transform_value(doc.pop(parent_field, None))
 
     def _get_parent_id_from_elastic(self, doc):
         """Get parent ID from doc"""
-        return doc.pop('_parent', None)
+        return doc.get('_parent')
 
     def _search_doc_by_id(self, index, doc_type, doc_id):
         """Search document in Elasticsearch by _id"""
@@ -227,7 +226,8 @@ class DocManager(DocManagerBase):
         self.commit()
         index, doc_type = self._index_and_mapping(namespace)
 
-        if self._is_child_type(index, doc_type):
+        parent_field = self._get_parent_field(index, doc_type)
+        if parent_field is not None:
             # We can't use get() here and have to do a full search instead.
             # This is due to the fact that Elasticsearch needs the parent ID
             # to know where to route the get request. We do not have the
@@ -237,6 +237,9 @@ class DocManager(DocManagerBase):
                 LOG.error('Could not find document with ID "%s" in '
                           'Elasticsearch to apply update', u(document_id))
                 return None
+            # Add the parent field back into the document
+            if '_parent' in document:
+                document['_source'][parent_field] = document['_parent']
         else:
             document = self.elastic.get(index=index, doc_type=doc_type,
                                         id=u(document_id))
@@ -244,8 +247,6 @@ class DocManager(DocManagerBase):
         updated = self.apply_update(document['_source'], update_spec)
         # _id is immutable in MongoDB, so won't have changed in update
         updated['_id'] = document['_id']
-        if '_parent' in document:
-            updated['_parent'] = document['_parent']
         self.upsert(updated, namespace, timestamp)
         # upsert() strips metadata, so only _id + fields in _source still here
         return updated
