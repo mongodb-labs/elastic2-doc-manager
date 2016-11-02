@@ -50,6 +50,8 @@ class ElasticsearchTestCase(unittest.TestCase):
                 cls.PARENT_CHILD_TEST_TYPE: {"parentField": "parent_id"}}})
 
     def setUp(self):
+        # Create meta index
+        self.elastic_conn.indices.create(index='mongodb_meta', ignore=400)
         # Create target index in elasticsearch
         self.elastic_conn.indices.create(index='test', ignore=400, body={
             "mappings": {
