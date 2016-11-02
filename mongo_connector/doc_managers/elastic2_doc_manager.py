@@ -237,14 +237,30 @@ class DocManager(DocManagerBase):
                 LOG.error('Could not find document with ID "%s" in '
                           'Elasticsearch to apply update', u(document_id))
                 return None
+            had_parent = '_parent' in document
+            old_parent = document.get('_parent')
+            parent_args = {}
             # Add the parent field back into the document
-            if '_parent' in document:
-                document['_source'][parent_field] = document['_parent']
+            if had_parent:
+                parent_args['parent'] = old_parent
+                document['_source'][parent_field] = old_parent
+
+            # If you want to change the parent value of a child document,
+            # it is not sufficient to just reindex or update the child
+            # document because the new parent document may be on a different
+            # shard. Instead, you must first delete the old child, and then
+            # index the new child.
+            updated = self.apply_update(document['_source'], update_spec)
+            if (had_parent and updated.get(parent_field) != old_parent) or (
+                    not had_parent and parent_field in updated):
+                # Parent field was changed or added
+                self.elastic.delete(index=index, doc_type=doc_type,
+                                    id=u(document_id), **parent_args)
         else:
             document = self.elastic.get(index=index, doc_type=doc_type,
                                         id=u(document_id))
+            updated = self.apply_update(document['_source'], update_spec)
 
-        updated = self.apply_update(document['_source'], update_spec)
         # _id is immutable in MongoDB, so won't have changed in update
         updated['_id'] = document['_id']
         self.upsert(updated, namespace, timestamp)
