@@ -24,22 +24,31 @@ from mongo_connector.command_helper import CommandHelper
 from mongo_connector.doc_managers.elastic2_doc_manager import (
     DocManager, _HAS_AWS, convert_aws_args, create_aws_auth)
 from mongo_connector.test_utils import MockGridFSFile, TESTARGS
+from mongo_connector.util import retry_until_ok
 
 from tests import unittest, elastic_pair
 from tests.test_elastic2 import ElasticsearchTestCase
+from elasticsearch.helpers import bulk
 
 
 class TestElasticDocManager(ElasticsearchTestCase):
     """Unit tests for the Elastic DocManager."""
 
     def test_update(self):
-        """Test the update method."""
+        """Test the update method using locally stored source"""
+
+        # If testing with BulkBuffer, auto_commit_interval
+        # needs to be None to not clear locally stored sources
+        self.elastic_doc.auto_commit_interval = None
+
         doc_id = 1
         doc = {"_id": doc_id, "a": 1, "b": 2}
         self.elastic_doc.upsert(doc, *TESTARGS)
+
         # $set only
         update_spec = {"$set": {"a": 1, "b": 2}}
         doc = self.elastic_doc.update(doc_id, update_spec, *TESTARGS)
+
         self.assertEqual(doc, {"_id": '1', "a": 1, "b": 2})
         # $unset only
         update_spec = {"$unset": {"a": True}}
@@ -49,6 +58,15 @@ class TestElasticDocManager(ElasticsearchTestCase):
         update_spec = {"$unset": {"b": True}, "$set": {"c": 3}}
         doc = self.elastic_doc.update(doc_id, update_spec, *TESTARGS)
         self.assertEqual(doc, {"_id": '1', "c": 3})
+
+        # Commit doc to Elasticsearch and get it from there
+        # to test if BulkBuffer works fine
+        self.elastic_doc.commit()
+        res = self._search()
+        self.assertEqual(doc, next(res))
+
+        # set auto_commit_interval back to 0
+        self.elastic_doc.auto_commit_interval = 0
 
     def test_upsert(self):
         """Test the upsert method."""
@@ -61,6 +79,82 @@ class TestElasticDocManager(ElasticsearchTestCase):
         for doc in res:
             self.assertEqual(doc['_id'], '1')
             self.assertEqual(doc['_source']['name'], 'John')
+
+    def test_update_using_ES(self):
+        """
+        Test the update method and getting sources for update
+        for Elasticsearch
+        """
+
+        # If testing with BulkBuffer, auto_commit_interval
+        # needs to be None to not clear locally stored sources
+        self.elastic_doc.auto_commit_interval = None
+
+        doc_id = 1
+        doc = {"_id": doc_id, "a": 1, "b": 2}
+        self.elastic_doc.upsert(doc, *TESTARGS)
+        self.elastic_doc.commit()
+
+        update_spec = {"$set": {"a": 1, "b": 2}}
+        self.elastic_doc.update(doc_id, update_spec, *TESTARGS)
+
+        update_spec = {"$set": {"a": 10, "b": 20}}
+        self.elastic_doc.update(doc_id, update_spec, *TESTARGS)
+
+        update_spec = {"$set": {"a": 100, "b": 200}}
+        self.elastic_doc.update(doc_id, update_spec, *TESTARGS)
+
+        # Commit doc to Elasticsearch and get it from there
+        # to test if BulkBuffer works fine
+        doc["a"] = 100
+        doc["b"] = 200
+        self.elastic_doc.commit()
+        res = self._search()
+        self.assertEqual(doc, next(res))
+
+        # set auto_commit_interval back to 0
+        self.elastic_doc.auto_commit_interval = 0
+
+    def test_upsert(self):
+        """Test the upsert method."""
+        docc = {'_id': '1', 'name': 'John'}
+        self.elastic_doc.upsert(docc, *TESTARGS)
+        res = self.elastic_conn.search(
+            index="test", doc_type='test',
+            body={"query": {"match_all": {}}}
+        )["hits"]["hits"]
+        for doc in res:
+            self.assertEqual(doc['_id'], '1')
+            self.assertEqual(doc['_source']['name'], 'John')
+
+    def test_upsert_with_updates(self):
+        """Test the upsert method with multi updates
+        and clearing buffer (commit) after each update."""
+
+        doc_id = 1
+        docc = {'_id': doc_id, 'name': 'John'}
+        self.elastic_doc.upsert(docc, *TESTARGS)
+
+        update_spec = {'$set': {'a': 1, 'b': 2}}
+        self.elastic_doc.update(doc_id, update_spec, *TESTARGS)
+
+        update_spec = {'$set': {'a': 2, 'b': 3, 'c': ['test']}}
+        self.elastic_doc.update(doc_id, update_spec, *TESTARGS)
+
+        update_spec = {'$set': {'c': ['test', 'test2']}}
+        self.elastic_doc.update(doc_id, update_spec, *TESTARGS)
+
+        res = self.elastic_conn.search(
+            index="test", doc_type='test',
+            body={"query": {"match_all": {}}}
+        )["hits"]["hits"]
+
+        for doc in res:
+            self.assertEqual(doc['_id'], '1')
+            self.assertEqual(doc['_source']['name'], 'John')
+            self.assertEqual(doc['_source']['a'], 2)
+            self.assertEqual(doc['_source']['b'], 3)
+            self.assertEqual(doc['_source']['c'], ["test", "test2"])
 
     def test_bulk_upsert(self):
         """Test the bulk_upsert method."""
@@ -75,14 +169,14 @@ class TestElasticDocManager(ElasticsearchTestCase):
         for i, r in enumerate(returned_ids):
             self.assertEqual(r, i)
 
-        docs = ({"_id": i, "weight": 2*i} for i in range(1000))
+        docs = ({"_id": i, "weight": 2 * i} for i in range(1000))
         self.elastic_doc.bulk_upsert(docs, *TESTARGS)
 
         returned_ids = sorted(
             int(doc["weight"]) for doc in self._search())
         self.assertEqual(len(returned_ids), 1000)
         for i, r in enumerate(returned_ids):
-            self.assertEqual(r, 2*i)
+            self.assertEqual(r, 2 * i)
 
     def test_remove(self):
         """Test the remove method."""
@@ -163,13 +257,18 @@ class TestElasticDocManager(ElasticsearchTestCase):
     def test_elastic_commit(self):
         """Test the auto_commit_interval attribute."""
         docc = {'_id': '3', 'name': 'Waldo'}
-        docman = DocManager(elastic_pair)
+
+        # Disable 1s refresh in elasticsearch
+        # https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-update-settings.html
+        disable_refresh_body = {'index': {'refresh_interval': '-1'}}
+        self.elastic_conn.indices.put_settings(index='test', body=disable_refresh_body)
+
         # test cases:
         # -1 = no autocommit
         # 0 = commit immediately
         # x > 0 = commit within x seconds
         for autocommit_interval in [None, 0, 1, 2]:
-            docman.auto_commit_interval = autocommit_interval
+            docman = DocManager(elastic_pair, auto_commit_interval=autocommit_interval)
             docman.upsert(docc, *TESTARGS)
             if autocommit_interval is None:
                 docman.commit()
@@ -182,8 +281,11 @@ class TestElasticDocManager(ElasticsearchTestCase):
                              "auto_commit_interval = %s" % str(
                                  autocommit_interval))
             self.assertEqual(results[0]["name"], "Waldo")
+            docman.stop()
             self._remove()
-        docman.stop()
+            retry_until_ok(self.elastic_conn.indices.refresh, index="")
+        enable_refresh_body = {"index": {"refresh_interval": "1s"}}
+        self.elastic_conn.indices.put_settings(index="test", body=enable_refresh_body)
 
     def test_get_last_doc(self):
         """Test the get_last_doc method.
@@ -216,7 +318,7 @@ class TestElasticDocManager(ElasticsearchTestCase):
         self.elastic_doc.command_helper = CommandHelper()
 
         self.elastic_doc.handle_command({'create': 'test2'}, *cmd_args)
-        time.sleep(1)
+        retry_until_ok(self.elastic_conn.indices.refresh, index="")
         self.assertIn('test2', self._mappings('test'))
 
         docs = [
@@ -227,6 +329,10 @@ class TestElasticDocManager(ElasticsearchTestCase):
         self.elastic_doc.upsert(docs[0], 'test.test2', 1)
         self.elastic_doc.upsert(docs[1], 'test.test2', 1)
         self.elastic_doc.upsert(docs[2], 'test.test2', 1)
+
+        # Commit upserted docs as they are in buffer
+        self.elastic_doc.commit()
+
         res = list(self.elastic_doc._stream_search(
             index="test", doc_type='test2',
             body={"query": {"match_all": {}}}
@@ -235,7 +341,7 @@ class TestElasticDocManager(ElasticsearchTestCase):
             self.assertTrue(d in res)
 
         self.elastic_doc.handle_command({'drop': 'test2'}, *cmd_args)
-        time.sleep(3)
+        retry_until_ok(self.elastic_conn.indices.refresh, index="")
         res = list(self.elastic_doc._stream_search(
             index="test", doc_type='test2',
             body={"query": {"match_all": {}}})
@@ -244,12 +350,54 @@ class TestElasticDocManager(ElasticsearchTestCase):
 
         self.elastic_doc.handle_command({'create': 'test2'}, *cmd_args)
         self.elastic_doc.handle_command({'create': 'test3'}, *cmd_args)
-        time.sleep(1)
+        retry_until_ok(self.elastic_conn.indices.refresh, index="")
         self.elastic_doc.handle_command({'dropDatabase': 1}, *cmd_args)
-        time.sleep(1)
+        retry_until_ok(self.elastic_conn.indices.refresh, index="")
         self.assertNotIn('test', self._indices())
         self.assertNotIn('test2', self._mappings())
         self.assertNotIn('test3', self._mappings())
+
+    def buffer_and_drop(self):
+        """Insert document and drop collection while doc is in buffer"""
+
+        self.elastic_doc.command_helper = CommandHelper()
+
+        self.elastic_doc.auto_commit_interval = None
+        index = "test3"
+        doc_type = "foo"
+        cmd_args = ('%s.%s' % (index, doc_type), 1)
+
+        doc_id = 1
+        doc = {"_id": doc_id, "name": "bar"}
+        self.elastic_doc.upsert(doc, *cmd_args)
+
+        self.elastic_doc.handle_command({'drop': doc_type}, *cmd_args)
+        retry_until_ok(self.elastic_conn.indices.refresh, index="")
+
+        # Commit should be called before command has been handled
+        # Which means that buffer should be empty
+        self.assertFalse(self.elastic_doc.BulkBuffer.get_buffer())
+
+        # After drop, below search should return no results
+        res = list(self.elastic_doc._stream_search(
+            index=index, doc_type=doc_type,
+            body={"query": {"match_all": {}}})
+        )
+        self.assertFalse(res)
+
+        # Test dropDatabase as well
+        # Firstly add document to database again
+        # This time update doc as well
+        self.elastic_doc.upsert(doc, *cmd_args)
+        update_spec = {"$set": {"name": "foo2"}}
+        self.elastic_doc.update(doc_id, update_spec, *cmd_args)
+        self.elastic_doc.handle_command({'dropDatabase': 1}, *cmd_args)
+        retry_until_ok(self.elastic_conn.indices.refresh, index="")
+        self.assertFalse(self.elastic_doc.BulkBuffer.get_buffer())
+        self.assertNotIn(index, self._mappings())
+
+        # set auto_commit_interval back to 0
+        self.elastic_doc.auto_commit_interval = 0
 
 
 class TestElasticDocManagerAWS(unittest.TestCase):

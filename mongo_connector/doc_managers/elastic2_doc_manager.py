@@ -21,7 +21,7 @@ import base64
 import logging
 import warnings
 
-from threading import Timer
+from threading import Timer, Lock
 
 import bson.json_util
 
@@ -112,6 +112,17 @@ class DocManager(DocManagerBase):
         if type(url) is not list:
             url = [url]
         self.elastic = Elasticsearch(hosts=url, **client_options)
+
+        self._formatter = DefaultDocumentFormatter()
+        self.BulkBuffer = BulkBuffer(self)
+
+        # As bulk operation can be done in another thread
+        # lock is needed to prevent access to BulkBuffer
+        # while commiting documents to Elasticsearch
+        # It is because BulkBuffer might get outdated
+        # docs from Elasticsearch if bulk is still ongoing
+        self.lock = Lock()
+
         self.auto_commit_interval = auto_commit_interval
         self.meta_index_name = meta_index_name
         self.meta_type = meta_type
@@ -119,7 +130,6 @@ class DocManager(DocManagerBase):
         self.chunk_size = chunk_size
         if self.auto_commit_interval not in [None, 0]:
             self.run_auto_commit()
-        self._formatter = DefaultDocumentFormatter()
 
         self.has_attachment_mapping = False
         self.attachment_field = attachment_field
@@ -131,7 +141,9 @@ class DocManager(DocManagerBase):
 
     def stop(self):
         """Stop the auto-commit thread."""
-        self.auto_commit_interval = None
+        self.auto_commit_interval = 0
+        # Commit docs from buffer
+        self.commit()
 
     def apply_update(self, doc, update_spec):
         if "$set" not in update_spec and "$unset" not in update_spec:
@@ -141,6 +153,8 @@ class DocManager(DocManagerBase):
 
     @wrap_exceptions
     def handle_command(self, doc, namespace, timestamp):
+        # Flush buffer before handle command
+        self.commit()
         db = namespace.split('.', 1)[0]
         if doc.get('dropDatabase'):
             dbs = self.command_helper.map_db(db)
@@ -183,35 +197,59 @@ class DocManager(DocManagerBase):
         """Apply updates given in update_spec to the document whose id
         matches that of doc.
         """
-        self.commit()
+
         index, doc_type = self._index_and_mapping(namespace)
-        document = self.elastic.get(index=index, doc_type=doc_type,
-                                    id=u(document_id))
-        updated = self.apply_update(document['_source'], update_spec)
-        # _id is immutable in MongoDB, so won't have changed in update
-        updated['_id'] = document['_id']
-        self.upsert(updated, namespace, timestamp)
+        with self.lock:
+            # Check if document source is stored in local buffer
+            document = self.BulkBuffer.get_from_sources(index,
+                                                        doc_type,
+                                                        u(document_id))
+        if document:
+            # Document source collected from local buffer
+            # Perform apply_update on it and then it will be
+            # ready for commiting to Elasticsearch
+            updated = self.apply_update(document, update_spec)
+            # _id is immutable in MongoDB, so won't have changed in update
+            updated['_id'] = document_id
+            self.upsert(updated, namespace, timestamp)
+        else:
+            # Document source needs to be retrieved from Elasticsearch
+            # before performing update. Pass update_spec to upsert function
+            updated = {"_id": document_id}
+            self.upsert(updated, namespace, timestamp, update_spec)
         # upsert() strips metadata, so only _id + fields in _source still here
         return updated
 
     @wrap_exceptions
-    def upsert(self, doc, namespace, timestamp):
+    def upsert(self, doc, namespace, timestamp, update_spec=None):
         """Insert a document into Elasticsearch."""
         index, doc_type = self._index_and_mapping(namespace)
         # No need to duplicate '_id' in source document
         doc_id = u(doc.pop("_id"))
         metadata = {
-            "ns": namespace,
-            "_ts": timestamp
+            'ns': namespace,
+            '_ts': timestamp
         }
+
         # Index the source document, using lowercase namespace as index name.
-        self.elastic.index(index=index, doc_type=doc_type,
-                           body=self._formatter.format_document(doc), id=doc_id,
-                           refresh=(self.auto_commit_interval == 0))
+        action = {
+            '_op_type': 'index',
+            '_index': index,
+            '_type': doc_type,
+            '_id': doc_id,
+            '_source': self._formatter.format_document(doc)
+        }
         # Index document metadata with original namespace (mixed upper/lower).
-        self.elastic.index(index=self.meta_index_name, doc_type=self.meta_type,
-                           body=bson.json_util.dumps(metadata), id=doc_id,
-                           refresh=(self.auto_commit_interval == 0))
+        meta_action = {
+            '_op_type': 'index',
+            '_index': self.meta_index_name,
+            '_type': self.meta_type,
+            '_id': doc_id,
+            '_source': bson.json_util.dumps(metadata)
+        }
+
+        self.index(action, meta_action, doc, update_spec)
+
         # Leave _id, since it's part of the original document
         doc['_id'] = doc_id
 
@@ -225,18 +263,18 @@ class DocManager(DocManagerBase):
                 index, doc_type = self._index_and_mapping(namespace)
                 doc_id = u(doc.pop("_id"))
                 document_action = {
-                    "_index": index,
-                    "_type": doc_type,
-                    "_id": doc_id,
-                    "_source": self._formatter.format_document(doc)
+                    '_index': index,
+                    '_type': doc_type,
+                    '_id': doc_id,
+                    '_source': self._formatter.format_document(doc)
                 }
                 document_meta = {
-                    "_index": self.meta_index_name,
-                    "_type": self.meta_type,
-                    "_id": doc_id,
-                    "_source": {
-                        "ns": namespace,
-                        "_ts": timestamp
+                    '_index': self.meta_index_name,
+                    '_type': self.meta_type,
+                    '_id': doc_id,
+                    '_source': {
+                        'ns': namespace,
+                        '_ts': timestamp
                     }
                 }
                 yield document_action
@@ -292,23 +330,43 @@ class DocManager(DocManagerBase):
         doc = self._formatter.format_document(doc)
         doc[self.attachment_field] = base64.b64encode(f.read()).decode()
 
-        self.elastic.index(index=index, doc_type=doc_type,
-                           body=doc, id=doc_id,
-                           refresh=(self.auto_commit_interval == 0))
-        self.elastic.index(index=self.meta_index_name, doc_type=self.meta_type,
-                           body=bson.json_util.dumps(metadata), id=doc_id,
-                           refresh=(self.auto_commit_interval == 0))
+        action = {
+            '_op_type': 'index',
+            '_index': index,
+            '_type': doc_type,
+            '_id': doc_id,
+            '_source': doc
+        }
+        meta_action = {
+            '_op_type': 'index',
+            '_index': self.meta_index_name,
+            '_type': self.meta_type,
+            '_id': doc_id,
+            '_source': bson.json_util.dumps(metadata)
+        }
+
+        self.index(action, meta_action)
 
     @wrap_exceptions
     def remove(self, document_id, namespace, timestamp):
         """Remove a document from Elasticsearch."""
         index, doc_type = self._index_and_mapping(namespace)
-        self.elastic.delete(index=index, doc_type=doc_type,
-                            id=u(document_id),
-                            refresh=(self.auto_commit_interval == 0))
-        self.elastic.delete(index=self.meta_index_name, doc_type=self.meta_type,
-                            id=u(document_id),
-                            refresh=(self.auto_commit_interval == 0))
+
+        action = {
+            '_op_type': 'delete',
+            '_index': index,
+            '_type': doc_type,
+            '_id': u(document_id)
+        }
+
+        meta_action = {
+            '_op_type': 'delete',
+            '_index': self.meta_index_name,
+            '_type': self.meta_type,
+            '_id': u(document_id)
+        }
+
+        self.index(action, meta_action)
 
     @wrap_exceptions
     def _stream_search(self, *args, **kwargs):
@@ -334,13 +392,33 @@ class DocManager(DocManagerBase):
                 }
             })
 
+    def index(self, action, meta_action, doc_source=None, update_spec=None):
+        with self.lock:
+            self.BulkBuffer.add_upsert(action, meta_action, doc_source, update_spec)
+
+        # Divide by two to account for meta actions
+        if len(self.BulkBuffer.action_buffer) / 2 >= self.chunk_size or self.auto_commit_interval == 0:
+            self.commit()
+
     def commit(self):
-        """Refresh all Elasticsearch indexes."""
+        """Send bulk requests and clear buffer"""
+        with self.lock:
+            try:
+                action_buffer = self.BulkBuffer.get_buffer()
+                if action_buffer:
+                    successes, errors = bulk(self.elastic, action_buffer)
+                    LOG.debug("Bulk successfully done for %d docs" % successes)
+                    if errors:
+                        LOG.error("Error occurred during bulk to ElasticSearch:"
+                                  " %r" % errors)
+            except Exception as _:
+                LOG.exception("Exception while commiting to Elasticsearch")
+
         retry_until_ok(self.elastic.indices.refresh, index="")
 
     def run_auto_commit(self):
         """Periodically commit to the Elastic server."""
-        self.elastic.indices.refresh()
+        self.commit()
         if self.auto_commit_interval not in [None, 0]:
             Timer(self.auto_commit_interval, self.run_auto_commit).start()
 
@@ -366,3 +444,181 @@ class DocManager(DocManagerBase):
         except es_exceptions.RequestError:
             # no documents so ES returns 400 because of undefined _ts mapping
             return None
+
+
+class BulkBuffer(object):
+
+    def __init__(self, docman):
+
+        # Parent object
+        self.docman = docman
+
+        # Action buffer for bulk indexing
+        self.action_buffer = []
+
+        # Docs to update
+        # Dict stores all documents for which firstly
+        # source has to be retrieved from Elasticsearch
+        # and then apply_update needs to be performed
+        # Format: [ (doc, update_spec, action_buffer_index, get_from_ES) ]
+        self.doc_to_update = []
+
+        # Below dictionary contains ids of documents
+        # which need to be retrieved from Elasticsearch
+        # It prevents from getting same document multiple times from ES
+        # Format: {"_index": {"_type": {"_id": True}}}
+        self.doc_to_get = {}
+
+        # Dictionary of sources
+        # Format: {"_index": {"_type": {"_id": {"_source": actual_source}}}}
+        self.sources = {}
+
+    def add_upsert(self, action, meta_action, doc_source, update_spec):
+        """
+        Function which stores sources for "insert" actions
+        and decide if for "update" action has to add docs to
+        get source buffer
+        """
+
+        # Whenever update_spec is provided to this method
+        # it means that doc source needs to be retrieved
+        # from Elasticsearch. It means also that source
+        # is not stored in local buffer
+        if update_spec:
+            self.bulk_index(action, meta_action)
+
+            # -1 -> to get latest index number
+            # -1 -> to get action instead of meta_action
+            # Update document based on source retrieved from ES
+            self.add_doc_to_update(action, update_spec, len(self.action_buffer) - 2)
+        else:
+            # Insert and update operations provide source
+            # Store it in local buffer and use for comming updates
+            # inside same buffer
+            # add_to_sources will not be called for delete operation
+            # as it does not provide doc_source
+            if doc_source:
+                self.add_to_sources(action, doc_source)
+            self.bulk_index(action, meta_action)
+
+    def add_doc_to_update(self, action, update_spec, action_buffer_index):
+        """
+        Prepare document for update based on Elasticsearch response.
+        Set flag if document needs to be retrieved from Elasticsearch
+        """
+
+        doc = {'_index': action['_index'],
+               '_type': action['_type'],
+               '_id': action['_id']}
+
+        # If get_from_ES == True -> get document's source from Elasticsearch
+        get_from_ES = self.should_get_id(action)
+        self.doc_to_update.append((doc, update_spec, action_buffer_index, get_from_ES))
+
+    def should_get_id(self, action):
+        """
+        Mark document to retrieve its source from Elasticsearch.
+        Returns:
+            True - if marking document for the first time in this bulk
+            False - if document has been already marked
+        """
+        mapping_ids = self.doc_to_get.setdefault(
+            action['_index'], {}).setdefault(action['_type'], set())
+        if action['_id'] in mapping_ids:
+            # There is an update on this id already
+            return False
+        else:
+            mapping_ids.add(action['_id'])
+            return True
+
+    def get_docs_sources_from_ES(self):
+        """Get document sources using MGET elasticsearch API"""
+        docs = [doc for doc, _, _, get_from_ES in self.doc_to_update if get_from_ES]
+        if docs:
+            documents = self.docman.elastic.mget(body={'docs': docs}, realtime=True)
+            return iter(documents['docs'])
+        else:
+            return iter([])
+
+    @wrap_exceptions
+    def update_sources(self):
+        """Update local sources based on response from Elasticsearch"""
+        ES_documents = self.get_docs_sources_from_ES()
+
+        for doc, update_spec, action_buffer_index, get_from_ES in self.doc_to_update:
+            if get_from_ES:
+                # Update source based on response from ES
+                ES_doc = next(ES_documents)
+                if ES_doc['found']:
+                    source = ES_doc['_source']
+                else:
+                    # Document not found in elasticsearch,
+                    # Seems like something went wrong during replication
+                    LOG.error("mGET: Document id: %s has not been found "
+                              "in Elasticsearch. Due to that "
+                              "following update failed: %s", doc['_id'], update_spec)
+                    self.reset_action(action_buffer_index)
+                    continue
+            else:
+                # Get source stored locally before applying update
+                # as it is up-to-date
+                source = self.get_from_sources(doc['_index'],
+                                               doc['_type'],
+                                               doc['_id'])
+                if not source:
+                    LOG.error("mGET: Document id: %s has not been found "
+                              "in local sources. Due to that following "
+                              "update failed: %s", doc["_id"], update_spec)
+                    self.reset_action(action_buffer_index)
+                    continue
+
+            updated = self.docman.apply_update(source, update_spec)
+
+            # Remove _id field from source
+            if '_id' in updated:
+                del updated['_id']
+
+            # Everytime update locally stored sources to keep them up-to-date
+            self.add_to_sources(doc, updated)
+
+            self.action_buffer[action_buffer_index]['_source'] = self.docman._formatter.format_document(updated)
+
+        # Remove empty actions if there were errors
+        self.action_buffer = [each_action for each_action in self.action_buffer if each_action]
+
+    def reset_action(self, action_buffer_index):
+        """Reset specific action as update failed"""
+        self.action_buffer[action_buffer_index] = {}
+        self.action_buffer[action_buffer_index + 1] = {}
+
+    def add_to_sources(self, action, doc_source):
+        """Store sources locally"""
+        mapping = self.sources.setdefault(action['_index'], {}).setdefault(action['_type'], {})
+        mapping[action['_id']] = doc_source
+
+    def get_from_sources(self, index, doc_type, document_id):
+        """Get source stored locally"""
+        return self.sources.get(index, {}).get(doc_type, {}).get(document_id, {})
+
+    def bulk_index(self, action, meta_action):
+        self.action_buffer.append(action)
+        self.action_buffer.append(meta_action)
+
+    def clean_up(self):
+        """Do clean-up before returning buffer"""
+        self.action_buffer = []
+        self.sources = {}
+        self.doc_to_get = {}
+        self.doc_to_update = []
+
+    def get_buffer(self):
+        """Get buffer which needs to be bulked to elasticsearch"""
+
+        # Get sources for documents which are in Elasticsearch
+        # and they are not in local buffer
+        if self.doc_to_update:
+            self.update_sources()
+
+        ES_buffer = self.action_buffer
+        self.clean_up()
+        return ES_buffer
