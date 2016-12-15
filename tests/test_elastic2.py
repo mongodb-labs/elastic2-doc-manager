@@ -41,17 +41,17 @@ class ElasticsearchTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.elastic_conn = Elasticsearch(hosts=[elastic_pair])
-        cls.elastic_doc = DocManager(elastic_pair,
-                                     auto_commit_interval=0)
 
     def setUp(self):
         # Create target index in elasticsearch
         self.elastic_conn.indices.create(index='test', ignore=400)
         self.elastic_conn.cluster.health(wait_for_status='yellow',
                                          index='test')
+        self.elastic_doc = DocManager(elastic_pair, auto_commit_interval=0)
 
     def tearDown(self):
         self.elastic_conn.indices.delete(index='test', ignore=404)
+        self.elastic_doc.stop()
 
     def _search(self, query=None):
         query = query or {"match_all": {}}
@@ -110,12 +110,10 @@ class TestElastic(ElasticsearchTestCase):
             os.unlink("oplog.timestamp")
         except OSError:
             pass
-        docman = DocManager(elastic_pair,
-                            auto_commit_interval=0)
         self.connector = Connector(
             mongo_address=self.repl_set.uri,
             ns_set=['test.test'],
-            doc_managers=(docman,),
+            doc_managers=(self.elastic_doc,),
             gridfs_set=['test.test']
         )
 
@@ -278,11 +276,12 @@ class TestElastic(ElasticsearchTestCase):
             self.assertNotIn('nan', doc)
             self.assertTrue(doc['still_exists'])
 
+
 class TestElasticMultipleHosts(unittest.TestCase):
     """Integration tests for mongo-connector + Elasticsearch Cluster."""
 
     def test_multiple_hosts(self):
-        elastic_doc =  DocManager(elastic_nodes)
+        elastic_doc = DocManager(elastic_nodes)
         self.assertEqual(len(elastic_doc.elastic.transport.hosts), 2)
 
 

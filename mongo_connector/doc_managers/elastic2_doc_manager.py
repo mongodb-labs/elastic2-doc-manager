@@ -19,9 +19,9 @@ Elasticsearch.
 """
 import base64
 import logging
+import threading
+import time
 import warnings
-
-from threading import Timer, Lock
 
 import bson.json_util
 
@@ -51,6 +51,9 @@ wrap_exceptions = exception_wrapper({
     es_exceptions.RequestError: errors.OperationFailed})
 
 LOG = logging.getLogger(__name__)
+
+DEFAULT_SEND_INTERVAL = 5
+"""The default interval in seconds to send buffered operations."""
 
 DEFAULT_AWS_REGION = 'us-east-1'
 
@@ -83,6 +86,58 @@ def create_aws_auth(aws_args):
                      'es')
 
 
+class AutoCommiter(threading.Thread):
+    """Thread that periodically sends buffered operations to Elastic.
+
+    :Parameters:
+      - `docman`: The Elasticsearch DocManager.
+      - `send_interval`: Number of seconds to wait before sending buffered
+        operations to Elasticsearch. Set to None or 0 to disable.
+      - `commit_interval`: Number of seconds to wait before committing
+        buffered operations to Elasticsearch. Set to None or 0 to disable.
+      - `sleep_interval`: Number of seconds to sleep.
+    """
+    def __init__(self, docman, send_interval, commit_interval,
+                 sleep_interval=1):
+        super(AutoCommiter, self).__init__()
+        self._docman = docman
+        self._send_interval = send_interval
+        self._commit_interval = commit_interval
+        self._should_auto_send = self._send_interval > 0
+        self._should_auto_commit = self._commit_interval > 0
+        self._sleep_interval = max(sleep_interval, 1)
+        self._stopped = False
+        self.daemon = True
+
+    def join(self, timeout=None):
+        self._stopped = True
+        super(AutoCommiter, self).join(timeout=timeout)
+
+    def run(self):
+        """Periodically sends buffered operations and/or commit.
+        """
+        if not self._should_auto_commit and not self._should_auto_send:
+            return
+        last_send, last_commit = 0, 0
+        while not self._stopped:
+            if self._should_auto_commit:
+                if last_commit > self._commit_interval:
+                    self._docman.commit()
+                    # commit also sends so reset both
+                    last_send, last_commit = 0, 0
+                    # Give a chance to exit the loop
+                    if self._stopped:
+                        break
+
+            if self._should_auto_send:
+                if last_send > self._send_interval:
+                    self._docman.send_buffered_operations()
+                    last_send = 0
+            time.sleep(self._sleep_interval)
+            last_send += self._sleep_interval
+            last_commit += self._sleep_interval
+
+
 class DocManager(DocManagerBase):
     """Elasticsearch implementation of the DocManager interface.
 
@@ -93,7 +148,8 @@ class DocManager(DocManagerBase):
     def __init__(self, url, auto_commit_interval=DEFAULT_COMMIT_INTERVAL,
                  unique_key='_id', chunk_size=DEFAULT_MAX_BULK,
                  meta_index_name="mongodb_meta", meta_type="mongodb_meta",
-                 attachment_field="content", **kwargs):
+                 attachment_field="content",
+                 **kwargs):
         client_options = kwargs.get('clientOptions', {})
         client_options.setdefault('sniff_on_start', True)
         client_options.setdefault('sniff_on_connection_fail', True)
@@ -121,18 +177,20 @@ class DocManager(DocManagerBase):
         # while commiting documents to Elasticsearch
         # It is because BulkBuffer might get outdated
         # docs from Elasticsearch if bulk is still ongoing
-        self.lock = Lock()
+        self.lock = threading.Lock()
 
         self.auto_commit_interval = auto_commit_interval
+        self.auto_send_interval = kwargs.get('autoSendInterval',
+                                             DEFAULT_SEND_INTERVAL)
         self.meta_index_name = meta_index_name
         self.meta_type = meta_type
         self.unique_key = unique_key
         self.chunk_size = chunk_size
-        if self.auto_commit_interval not in [None, 0]:
-            self.run_auto_commit()
-
         self.has_attachment_mapping = False
         self.attachment_field = attachment_field
+        self.auto_commiter = AutoCommiter(self, self.auto_send_interval,
+                                          self.auto_commit_interval)
+        self.auto_commiter.start()
 
     def _index_and_mapping(self, namespace):
         """Helper method for getting the index and type from a namespace."""
@@ -141,8 +199,9 @@ class DocManager(DocManagerBase):
 
     def stop(self):
         """Stop the auto-commit thread."""
+        self.auto_commiter.join()
         self.auto_commit_interval = 0
-        # Commit docs from buffer
+        # Commit any remaining docs from buffer
         self.commit()
 
     def apply_update(self, doc, update_spec):
@@ -400,27 +459,28 @@ class DocManager(DocManagerBase):
         if len(self.BulkBuffer.action_buffer) / 2 >= self.chunk_size or self.auto_commit_interval == 0:
             self.commit()
 
-    def commit(self):
-        """Send bulk requests and clear buffer"""
+    def send_buffered_operations(self):
+        """Send buffered operations to Elasticsearch.
+
+        This method is periodically called by the AutoCommitThread.
+        """
         with self.lock:
             try:
                 action_buffer = self.BulkBuffer.get_buffer()
                 if action_buffer:
                     successes, errors = bulk(self.elastic, action_buffer)
-                    LOG.debug("Bulk successfully done for %d docs" % successes)
+                    LOG.debug("Bulk request finished, successfully sent %d "
+                              "operations", successes)
                     if errors:
-                        LOG.error("Error occurred during bulk to ElasticSearch:"
-                                  " %r" % errors)
+                        LOG.error(
+                            "Bulk request finished with errors: %r", errors)
             except es_exceptions.ElasticsearchException:
-                LOG.exception("Exception while commiting to Elasticsearch")
+                LOG.exception("Bulk request finished failed with exception")
 
+    def commit(self):
+        """Send buffered requests and refresh all indexes."""
+        self.send_buffered_operations()
         retry_until_ok(self.elastic.indices.refresh, index="")
-
-    def run_auto_commit(self):
-        """Periodically commit to the Elastic server."""
-        self.commit()
-        if self.auto_commit_interval not in [None, 0]:
-            Timer(self.auto_commit_interval, self.run_auto_commit).start()
 
     @wrap_exceptions
     def get_last_doc(self):

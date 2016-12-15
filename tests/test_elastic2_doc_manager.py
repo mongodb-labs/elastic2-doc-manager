@@ -28,7 +28,6 @@ from mongo_connector.util import retry_until_ok
 
 from tests import unittest, elastic_pair
 from tests.test_elastic2 import ElasticsearchTestCase
-from elasticsearch.helpers import bulk
 
 
 class TestElasticDocManager(ElasticsearchTestCase):
@@ -254,38 +253,96 @@ class TestElasticDocManager(ElasticsearchTestCase):
         self.assertIn('1', result_ids)
         self.assertIn('2', result_ids)
 
+    def disable_auto_refresh(self):
+        """Disable default 1 second auto refresh in Elasticsearch.
+
+        https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-update-settings.html
+        """
+        self.elastic_conn.indices.put_settings(
+            index='test', body={'index': {'refresh_interval': '-1'}})
+
+    def enable_auto_refresh(self):
+        """Enable default 1 second auto refresh in Elasticsearch.
+        """
+        self.elastic_conn.indices.put_settings(
+            index='test', body={'index': {'refresh_interval': '1s'}})
+
     def test_elastic_commit(self):
         """Test the auto_commit_interval attribute."""
-        docc = {'_id': '3', 'name': 'Waldo'}
-
-        # Disable 1s refresh in elasticsearch
-        # https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-update-settings.html
-        disable_refresh_body = {'index': {'refresh_interval': '-1'}}
-        self.elastic_conn.indices.put_settings(index='test', body=disable_refresh_body)
+        self.disable_auto_refresh()
+        doc = {'_id': '3', 'name': 'Waldo'}
 
         # test cases:
-        # -1 = no autocommit
+        # None = no autocommit
         # 0 = commit immediately
         # x > 0 = commit within x seconds
-        for autocommit_interval in [None, 0, 1, 2]:
-            docman = DocManager(elastic_pair, auto_commit_interval=autocommit_interval)
-            docman.upsert(docc, *TESTARGS)
-            if autocommit_interval is None:
-                docman.commit()
-            else:
+        for commit_interval in [None, 0, 2, 8]:
+            docman = DocManager(elastic_pair,
+                                auto_commit_interval=commit_interval)
+            docman.upsert(doc, *TESTARGS)
+            if commit_interval > 0:
                 # Allow just a little extra time
-                time.sleep(autocommit_interval + 1)
+                time.sleep(commit_interval + 2)
             results = list(self._search())
-            self.assertEqual(len(results), 1,
-                             "should commit document with "
-                             "auto_commit_interval = %s" % str(
-                                 autocommit_interval))
-            self.assertEqual(results[0]["name"], "Waldo")
+            if commit_interval is None:
+                self.assertEqual(len(results), 0,
+                                 "should not commit document with "
+                                 "auto_commit_interval = None")
+            else:
+                self.assertEqual(len(results), 1,
+                                 "should commit document with "
+                                 "auto_commit_interval = %s" % (
+                                 commit_interval,))
+                self.assertEqual(results[0]["name"], "Waldo")
             docman.stop()
             self._remove()
             retry_until_ok(self.elastic_conn.indices.refresh, index="")
-        enable_refresh_body = {"index": {"refresh_interval": "1s"}}
-        self.elastic_conn.indices.put_settings(index="test", body=enable_refresh_body)
+        self.enable_auto_refresh()
+
+    def test_auto_send_interval(self):
+        """Test the auto_send_interval
+
+        auto_send_interval should control the amount of time to wait before
+        sending (but not committing) buffered operations.
+        """
+        self.disable_auto_refresh()
+        doc = {'_id': '3', 'name': 'Waldo'}
+
+        # test cases:
+        # None, 0 = no auto send
+        # x > 0 = send buffered operations within x seconds
+        for send_interval in [None, 0, 3, 8]:
+            docman = DocManager(elastic_pair,
+                                autoSendInterval=send_interval,
+                                auto_commit_interval=None)
+            docman.upsert(doc, *TESTARGS)
+            if send_interval > 0:
+                # Allow just a little extra time
+                time.sleep(send_interval + 2)
+            results = list(self._search())
+            self.assertEqual(
+                len(results), 0,
+                "documents should not be commited with "
+                "auto_commit_interval=None and auto_commit_interval=%s" % (
+                    send_interval,))
+            # Commit the possibly sent changes and search again
+            retry_until_ok(self.elastic_conn.indices.refresh, index="")
+            results = list(self._search())
+            if send_interval <= 0:
+                self.assertEqual(
+                    len(results), 0,
+                    "should not send document with auto_send_interval=%s" % (
+                        send_interval,))
+            else:
+                self.assertEqual(
+                    len(results), 1,
+                    "should send document with auto_send_interval=%s" % (
+                        send_interval,))
+                self.assertEqual(results[0]["name"], "Waldo")
+            docman.stop()
+            self._remove()
+            retry_until_ok(self.elastic_conn.indices.refresh, index="")
+        self.enable_auto_refresh()
 
     def test_get_last_doc(self):
         """Test the get_last_doc method.
