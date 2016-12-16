@@ -287,7 +287,7 @@ class TestElasticDocManager(ElasticsearchTestCase):
             docman = DocManager(elastic_pair,
                                 auto_commit_interval=commit_interval)
             docman.upsert(doc, *TESTARGS)
-            if commit_interval > 0:
+            if commit_interval:
                 # Allow just a little extra time
                 time.sleep(commit_interval + 2)
             results = list(self._search())
@@ -322,7 +322,7 @@ class TestElasticDocManager(ElasticsearchTestCase):
                                 autoSendInterval=send_interval,
                                 auto_commit_interval=None)
             docman.upsert(doc, *TESTARGS)
-            if send_interval > 0:
+            if send_interval:
                 # Allow just a little extra time
                 time.sleep(send_interval + 2)
             results = list(self._search())
@@ -334,7 +334,7 @@ class TestElasticDocManager(ElasticsearchTestCase):
             # Commit the possibly sent changes and search again
             retry_until_ok(self.elastic_conn.indices.refresh, index="")
             results = list(self._search())
-            if send_interval <= 0:
+            if not send_interval:
                 self.assertEqual(
                     len(results), 0,
                     "should not send document with auto_send_interval=%s" % (

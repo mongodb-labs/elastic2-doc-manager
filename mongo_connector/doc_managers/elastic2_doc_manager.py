@@ -104,8 +104,9 @@ class AutoCommiter(threading.Thread):
                  sleep_interval=1):
         super(AutoCommiter, self).__init__()
         self._docman = docman
-        self._send_interval = send_interval
-        self._commit_interval = commit_interval
+        # Change `None` intervals to 0
+        self._send_interval = send_interval if send_interval else 0
+        self._commit_interval = commit_interval if commit_interval else 0
         self._should_auto_send = self._send_interval > 0
         self._should_auto_commit = self._commit_interval > 0
         self._sleep_interval = max(sleep_interval, 1)
