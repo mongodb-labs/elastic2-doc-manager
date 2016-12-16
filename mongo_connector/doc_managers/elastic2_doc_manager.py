@@ -475,7 +475,7 @@ class DocManager(DocManagerBase):
                         LOG.error(
                             "Bulk request finished with errors: %r", errors)
             except es_exceptions.ElasticsearchException:
-                LOG.exception("Bulk request finished failed with exception")
+                LOG.exception("Bulk request failed with exception")
 
     def commit(self):
         """Send buffered requests and refresh all indexes."""

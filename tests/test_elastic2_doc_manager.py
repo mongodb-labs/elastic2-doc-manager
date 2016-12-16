@@ -17,6 +17,8 @@ import base64
 import sys
 import time
 
+from functools import wraps
+
 sys.path[0:0] = [""]
 
 from mongo_connector import errors
@@ -28,6 +30,25 @@ from mongo_connector.util import retry_until_ok
 
 from tests import unittest, elastic_pair
 from tests.test_elastic2 import ElasticsearchTestCase
+
+
+def disable_auto_refresh(func):
+    """Disable default 1 second auto refresh in Elasticsearch for a test.
+
+    https://www.elastic.co/guide/en/elasticsearch/reference/current/indices
+    -update-settings.html
+    """
+    @wraps(func)
+    def _disable_auto_refresh(self, *args, **kwargs):
+        try:
+            self.elastic_conn.indices.put_settings(
+                index='test', body={'index': {'refresh_interval': '-1'}})
+            return func(self, *args, **kwargs)
+        finally:
+            self.elastic_conn.indices.put_settings(
+                index='test', body={'index': {'refresh_interval': '1s'}})
+
+    return _disable_auto_refresh
 
 
 class TestElasticDocManager(ElasticsearchTestCase):
@@ -253,23 +274,9 @@ class TestElasticDocManager(ElasticsearchTestCase):
         self.assertIn('1', result_ids)
         self.assertIn('2', result_ids)
 
-    def disable_auto_refresh(self):
-        """Disable default 1 second auto refresh in Elasticsearch.
-
-        https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-update-settings.html
-        """
-        self.elastic_conn.indices.put_settings(
-            index='test', body={'index': {'refresh_interval': '-1'}})
-
-    def enable_auto_refresh(self):
-        """Enable default 1 second auto refresh in Elasticsearch.
-        """
-        self.elastic_conn.indices.put_settings(
-            index='test', body={'index': {'refresh_interval': '1s'}})
-
+    @disable_auto_refresh
     def test_elastic_commit(self):
         """Test the auto_commit_interval attribute."""
-        self.disable_auto_refresh()
         doc = {'_id': '3', 'name': 'Waldo'}
 
         # test cases:
@@ -297,15 +304,14 @@ class TestElasticDocManager(ElasticsearchTestCase):
             docman.stop()
             self._remove()
             retry_until_ok(self.elastic_conn.indices.refresh, index="")
-        self.enable_auto_refresh()
 
+    @disable_auto_refresh
     def test_auto_send_interval(self):
         """Test the auto_send_interval
 
         auto_send_interval should control the amount of time to wait before
         sending (but not committing) buffered operations.
         """
-        self.disable_auto_refresh()
         doc = {'_id': '3', 'name': 'Waldo'}
 
         # test cases:
@@ -342,7 +348,6 @@ class TestElasticDocManager(ElasticsearchTestCase):
             docman.stop()
             self._remove()
             retry_until_ok(self.elastic_conn.indices.refresh, index="")
-        self.enable_auto_refresh()
 
     def test_get_last_doc(self):
         """Test the get_last_doc method.
