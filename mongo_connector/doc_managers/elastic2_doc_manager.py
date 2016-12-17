@@ -344,7 +344,7 @@ class DocManager(DocManagerBase):
                     "Cannot upsert an empty sequence of "
                     "documents into Elastic Search")
         try:
-            kw = {}
+            kw = {'raise_on_error': False}
             if self.chunk_size > 0:
                 kw['chunk_size'] = self.chunk_size
 
