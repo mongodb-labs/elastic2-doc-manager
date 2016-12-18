@@ -1,24 +1,52 @@
+sudo: false
 language: python
-python:
-  - 2.6
-  - 2.7
-  - 3.3
-  - 3.4
-  - 3.5
+
+# Elasticsearch 5 requires Java 8
+addons:
+  apt:
+    packages:
+      - oracle-java8-set-default
+
+env:
+  global:
+    - MO_ADDRESS=127.0.0.1:20000
+    - ELASTIC_2_URL=http://download.elastic.co/elasticsearch/release/org/elasticsearch/distribution/tar/elasticsearch/2.4.3/elasticsearch-2.4.3.tar.gz
+    - ELASTIC_5_URL=http://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-5.1.1.tar.gz
+    # We need to manually set JAVA_HOME to Java 8 too.
+    - JAVA_HOME=/usr/lib/jvm/java-8-oracle
+
+matrix:
+  fast_finish: true
+  include:
+    - python: 2.6
+      env: MONGODB=3.2.11 ELASTIC=5.1.1 ELASTIC_URL=$ELASTIC_5_URL PYTHON_ELASTIC_VERSION='>=5.0.0,<6.0.0'
+    - python: 2.7
+      env: MONGODB=3.0.14 ELASTIC=5.1.1 ELASTIC_URL=$ELASTIC_5_URL PYTHON_ELASTIC_VERSION='>=5.0.0,<6.0.0'
+    - python: 3.3
+      env: MONGODB=2.6.12 ELASTIC=2.4.3 ELASTIC_URL=$ELASTIC_2_URL
+    - python: 3.5
+      env: MONGODB=2.4.14 ELASTIC=2.4.3 ELASTIC_URL=$ELASTIC_2_URL
 
 install:
-  - pip install --upgrade setuptools
-  - pip install mongo-orchestration
-  - sudo curl -L -O https://download.elastic.co/elasticsearch/release/org/elasticsearch/distribution/tar/elasticsearch/2.2.0/elasticsearch-2.2.0.tar.gz
-  - tar -xvf elasticsearch-2.2.0.tar.gz
-  - cd elasticsearch-2.2.0
-  - echo 'y' |  bin/plugin install mapper-attachments
+  - java -version
+  - # Install Elasticsearch with mapper-attachments
+  - wget $ELASTIC_URL
+  - tar -xvf elasticsearch-${ELASTIC}.tar.gz
+  - export PATH=${PWD}/elasticsearch-${ELASTIC}/bin/:${PATH}
+  - echo 'y' |  elasticsearch-plugin install mapper-attachments || echo 'y' |  plugin install mapper-attachments
+  - elasticsearch --version
+  - # Install MongoDB
+  - wget http://fastdl.mongodb.org/linux/mongodb-linux-x86_64-${MONGODB}.tgz
+  - tar -zxf mongodb-linux-x86_64-${MONGODB}.tgz
+  - export PATH=${PWD}/mongodb-linux-x86_64-${MONGODB}/bin/:${PATH}
+  - mongod --version
+  - # Install MongoOrchestration
+  - pip install "mongo-orchestration>=0.6.7,<1.0"
 
 before_script:
-  - bin/elasticsearch > temp.txt &
+  - elasticsearch > temp.txt &
   - sleep 10
-  - cd ..
-  - mongo-orchestration start
+  - mongo-orchestration start -p 20000 -b 127.0.0.1
 
 script:
   - python setup.py test

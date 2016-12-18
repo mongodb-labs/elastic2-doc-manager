@@ -5,6 +5,7 @@ except ImportError:
 
     use_setuptools()
     from setuptools import setup
+import os
 import sys
 
 test_suite = "tests"
@@ -21,6 +22,12 @@ try:
 except IOError:
     long_description = None  # Install without README.rst
 
+# To test against an Elasticsearch 5.x server we need to use the 5.x
+# Python Elasticsearch client, see .travis.yml.
+PYTHON_ELASTIC_VERSION = os.environ.get("PYTHON_ELASTIC_VERSION",
+                                        ">=2.0.0,<3.0.0")
+
+
 setup(name='elastic2-doc-manager',
       version='0.2.1.dev0',
       maintainer='mongodb',
@@ -30,7 +37,8 @@ setup(name='elastic2-doc-manager',
       author='anna herlihy',
       author_email='mongodb-user@googlegroups.com',
       url='https://github.com/mongodb-labs/elastic2-doc-manager',
-      install_requires=['mongo-connector >= 2.3.0', "elasticsearch>=2.0.0,<3.0.0"],
+      install_requires=['mongo-connector >= 2.3.0',
+                        'elasticsearch' + PYTHON_ELASTIC_VERSION],
       packages=["mongo_connector", "mongo_connector.doc_managers"],
       extras_require={'aws': ['boto3 >= 1.4.0', 'requests-aws-sign >= 0.1.2']},
       license="Apache License, Version 2.0",
@@ -42,6 +50,7 @@ setup(name='elastic2-doc-manager',
           "Programming Language :: Python :: 2.7",
           "Programming Language :: Python :: 3.3",
           "Programming Language :: Python :: 3.4",
+          "Programming Language :: Python :: 3.5",
           "Topic :: Database",
           "Topic :: Software Development :: Libraries :: Python Modules",
           "Operating System :: Unix",
