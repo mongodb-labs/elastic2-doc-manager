@@ -1,19 +1,22 @@
 try:
-    import setuptools
+    from setuptools import setup
 except ImportError:
     from ez_setup import use_setuptools
 
     use_setuptools()
-    import setuptools
-
-from setuptools import setup
-from setuptools.command.install import install
-
+    from setuptools import setup
 import os
 import sys
 
+# To test against an Elasticsearch 5.x server we need to use the 5.x
+# Python Elasticsearch client, see .travis.yml.
+PYTHON_ELASTIC_VERSION = os.environ.get("PYTHON_ELASTIC_VERSION",
+                                        ">=2.0.0,<3.0.0")
+
 test_suite = "tests"
-tests_require = ["mongo-orchestration>=0.6.7,<1.0", "requests>=2.5.1"]
+tests_require = ["mongo-orchestration>=0.6.7,<1.0",
+                 "requests>=2.5.1",
+                 "elasticsearch" + PYTHON_ELASTIC_VERSION]
 
 if sys.version_info[:2] == (2, 6):
     # Need unittest2 to run unittests in Python 2.6
@@ -26,26 +29,6 @@ try:
 except IOError:
     long_description = None  # Install without README.rst
 
-# To test against an Elasticsearch 5.x server we need to use the 5.x
-# Python Elasticsearch client, see .travis.yml.
-PYTHON_ELASTIC_VERSION = os.environ.get("PYTHON_ELASTIC_VERSION",
-                                        ">=2.0.0,<3.0.0")
-
-
-class CustomInstallCommand(install):
-    """Install elastic2-doc-manager and elasticsearch."""
-    def run(self):
-        # Install normally
-        install.run(self)
-        print(self.distribution.fetch_build_eggs)
-        # If elasticsearch was not install because the user did not
-        # specify it via extras, then default to install Elasticsearch 2.x
-        try:
-            import elasticsearch
-        except ImportError:
-            self.distribution.fetch_build_eggs(
-                ['elasticsearch>=2.0.0,<3.0.0'])
-
 
 setup(name='elastic2-doc-manager',
       version='0.2.1.dev0',
@@ -56,9 +39,6 @@ setup(name='elastic2-doc-manager',
       author='anna herlihy',
       author_email='mongodb-user@googlegroups.com',
       url='https://github.com/mongodb-labs/elastic2-doc-manager',
-      cmdclass={
-          'install': CustomInstallCommand,
-      },
       install_requires=['mongo-connector >= 2.3.0'],
       extras_require={
           'aws': ['boto3 >= 1.4.0', 'requests-aws-sign >= 0.1.2'],
