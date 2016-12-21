@@ -1,10 +1,14 @@
 try:
-    from setuptools import setup
+    import setuptools
 except ImportError:
     from ez_setup import use_setuptools
 
     use_setuptools()
-    from setuptools import setup
+    import setuptools
+
+from setuptools import setup
+from setuptools.command.install import install
+
 import os
 import sys
 
@@ -28,6 +32,21 @@ PYTHON_ELASTIC_VERSION = os.environ.get("PYTHON_ELASTIC_VERSION",
                                         ">=2.0.0,<3.0.0")
 
 
+class CustomInstallCommand(install):
+    """Install elastic2-doc-manager and elasticsearch."""
+    def run(self):
+        # Install normally
+        install.run(self)
+        print(self.distribution.fetch_build_eggs)
+        # If elasticsearch was not install because the user did not
+        # specify it via extras, then default to install Elasticsearch 2.x
+        try:
+            import elasticsearch
+        except ImportError:
+            self.distribution.fetch_build_eggs(
+                ['elasticsearch>=2.0.0,<3.0.0'])
+
+
 setup(name='elastic2-doc-manager',
       version='0.2.1.dev0',
       maintainer='mongodb',
@@ -37,10 +56,16 @@ setup(name='elastic2-doc-manager',
       author='anna herlihy',
       author_email='mongodb-user@googlegroups.com',
       url='https://github.com/mongodb-labs/elastic2-doc-manager',
-      install_requires=['mongo-connector >= 2.3.0',
-                        'elasticsearch' + PYTHON_ELASTIC_VERSION],
+      cmdclass={
+          'install': CustomInstallCommand,
+      },
+      install_requires=['mongo-connector >= 2.3.0'],
+      extras_require={
+          'aws': ['boto3 >= 1.4.0', 'requests-aws-sign >= 0.1.2'],
+          'elastic2': ['elasticsearch>=2.0.0,<3.0.0'],
+          'elastic5': ['elasticsearch>=5.0.0,<6.0.0']
+      },
       packages=["mongo_connector", "mongo_connector.doc_managers"],
-      extras_require={'aws': ['boto3 >= 1.4.0', 'requests-aws-sign >= 0.1.2']},
       license="Apache License, Version 2.0",
       classifiers=[
           "Development Status :: 4 - Beta",
