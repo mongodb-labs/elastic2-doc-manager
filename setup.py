@@ -31,7 +31,7 @@ except IOError:
 
 
 setup(name='elastic2-doc-manager',
-      version='0.2.1.dev0',
+      version='0.3.0',
       maintainer='mongodb',
       description='Elastic2 plugin for mongo-connector',
       long_description=long_description,
