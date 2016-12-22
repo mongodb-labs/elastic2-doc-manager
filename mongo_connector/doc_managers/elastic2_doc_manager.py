@@ -25,6 +25,18 @@ import warnings
 
 import bson.json_util
 
+try:
+    import elasticsearch
+except ImportError:
+    raise ImportError(
+        "Error: elasticsearch (https://pypi.python.org/pypi/elasticsearch) "
+        "version 2.x or 5.x is not installed.\n"
+        "Install with:\n"
+        "  pip install elastic-doc-manager[elastic2]\n"
+        "or:\n"
+        "  pip install elastic-doc-manager[elastic5]\n"
+    )
+
 from elasticsearch import Elasticsearch, exceptions as es_exceptions, connection as es_connection
 from elasticsearch.helpers import bulk, scan, streaming_bulk, BulkIndexError
 

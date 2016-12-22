@@ -36,18 +36,26 @@ Elasticsearch 2.x
 For use with an Elasticsearch 2.x server, install with
 `pip <https://pypi.python.org/pypi/pip>`__::
 
-  pip install elastic2-doc-manager
+  pip install 'elastic2-doc-manager[elastic2]'
 
 Elasticsearch 5.x
 -----------------
 
 For use with an Elasticsearch 5.x server, install with::
 
-  pip install elastic2-doc-manager>=0.3.0 --upgrade 'elasticsearch>=5.0.0,<6.0.0'
+  pip install 'elastic2-doc-manager[elastic5]'
 
-.. note:: Version 0.3.0 added support for Elasticsearch 5.x and the Python
-          `elasticsearch <https://pypi.python.org/pypi/elasticsearch>`_
-          dependency **must** be upgraded to 5.x.
+.. note:: Version 0.3.0 added support for Elasticsearch 5.x.
+
+
+Amazon Elasticsearch Service
+----------------------------
+
+To use with Amazon Elasticsearch Service, you must install the required AWS
+dependencies along with the version of Elasticsearch::
+
+  pip install 'elastic2-doc-manager[elastic2,aws]'
+
 
 Development
 -----------
@@ -56,7 +64,7 @@ You can also install the development version of elastic2-doc-manager
 manually::
 
   git clone https://github.com/mongodb-labs/elastic2-doc-manager.git
-  pip install -e ./elastic2-doc-manager
+  pip install -e './elastic2-doc-manager[elastic2]'
 
 You may have to run ``pip`` with ``sudo``, depending on where you're
 installing and what privileges you have.
@@ -105,6 +113,7 @@ Requirements
     - ``ES_HOST`` is the hostname on which Elasticsearch is running.
     - ``ES_PORT`` is the port on which Elasticsearch is running.
     - ``MO_ADDRESS`` is the address to use for Mongo Orchestration (i.e. hostname:port)
+    - ``PYTHON_ELASTIC_VERSION`` is the pip style version of Elasticsearch to test with (eg >=5.0.0,<6.0.0)
 
 All the tests live in the `tests` directory.
 
