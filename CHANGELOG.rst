@@ -6,7 +6,7 @@ Version 0.3.0
 
 - Support for Elasticsearch 5.x.
 - Significant performance improvements because operations are buffered.
-- BulkIndexErrors are now caught and re-reraised as OperationFailed.
+- BulkIndexErrors are now caught and reraised as OperationFailed.
 
 Version 0.2.0
 -------------
