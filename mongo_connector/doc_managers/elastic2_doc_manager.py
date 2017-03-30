@@ -61,8 +61,8 @@ wrap_exceptions = exception_wrapper({
     es_exceptions.TransportError: errors.OperationFailed,
     es_exceptions.NotFoundError: errors.OperationFailed,
     es_exceptions.RequestError: errors.OperationFailed,
-	es_exceptions.ConnectionTimeout: errors.OperationFailed
-	})
+    es_exceptions.ConnectionTimeout: errors.OperationFailed
+    })
 
 LOG = logging.getLogger(__name__)
 
