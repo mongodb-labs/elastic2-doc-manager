@@ -22,6 +22,7 @@ import logging
 import threading
 import time
 import warnings
+import fnmatch
 
 import bson.json_util
 
@@ -153,6 +154,50 @@ class AutoCommiter(threading.Thread):
             last_send += self._sleep_interval
             last_commit += self._sleep_interval
 
+class PipelineConfig(object):
+    """ Object that handles the pipeline configuration
+    """
+
+    def __init__(self, elastic, dict_mappings):
+
+        self.cache = {}
+
+        plain_mappings = []
+        wildcard_mappings = []
+
+        for mapping in dict_mappings:
+
+            pipeline = dict_mappings[mapping]
+
+            try:
+                elastic.ingest.get_pipeline(id=pipeline)
+            except es_exceptions.NotFoundError:
+                raise errors.InvalidConfiguration("Pipeline \"%s\" not found" % pipeline)
+
+            if mapping.find('*') == -1:
+                plain_mappings.append({"value": mapping, "pipeline": pipeline})
+            else:
+                wildcard_mappings.append({"value": mapping, "pipeline": pipeline})
+
+        self.mappings = plain_mappings + wildcard_mappings
+
+    def get_pipeline(self, namespace):
+        """Get pipeline by elasticsearch namespace.
+
+        If namespace is not mapped, return None
+        """
+
+        if namespace in self.cache:
+            return self.cache[namespace]
+
+        for mapping in self.mappings:
+            if fnmatch.fnmatch(namespace, mapping['value']):
+                self.cache[namespace] = mapping['pipeline']
+                return mapping['pipeline']
+
+        self.cache[namespace] = None
+
+        return None
 
 class DocManager(DocManagerBase):
     """Elasticsearch implementation of the DocManager interface.
@@ -204,6 +249,8 @@ class DocManager(DocManagerBase):
         self.auto_commiter = AutoCommiter(self, self.auto_send_interval,
                                           self.auto_commit_interval)
         self.auto_commiter.start()
+
+        self.pipelines = PipelineConfig(self.elastic, kwargs.get('pipelines', {}))
 
     def _index_and_mapping(self, namespace):
         """Helper method for getting the index and type from a namespace."""
@@ -309,7 +356,8 @@ class DocManager(DocManagerBase):
             '_index': index,
             '_type': doc_type,
             '_id': doc_id,
-            '_source': self._formatter.format_document(doc)
+            '_source': self._formatter.format_document(doc),
+            'pipeline': self.pipelines.get_pipeline(namespace)
         }
         # Index document metadata with original namespace (mixed upper/lower).
         meta_action = {
@@ -338,7 +386,8 @@ class DocManager(DocManagerBase):
                     '_index': index,
                     '_type': doc_type,
                     '_id': doc_id,
-                    '_source': self._formatter.format_document(doc)
+                    '_source': self._formatter.format_document(doc),
+                    'pipeline': self.pipelines.get_pipeline(namespace)
                 }
                 document_meta = {
                     '_index': self.meta_index_name,
@@ -407,7 +456,8 @@ class DocManager(DocManagerBase):
             '_index': index,
             '_type': doc_type,
             '_id': doc_id,
-            '_source': doc
+            '_source': doc,
+            'pipeline': self.pipelines.get_pipeline(namespace)
         }
         meta_action = {
             '_op_type': 'index',

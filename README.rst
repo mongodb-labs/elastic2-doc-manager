@@ -56,6 +56,29 @@ dependencies along with the version of Elasticsearch::
 
   pip install 'elastic2-doc-manager[elastic2,aws]'
 
+Elasticsearch 5.x Pipelines
+---------------------------
+
+You can use elasticsearch `pipelines <https://www.elastic.co/guide/en/elasticsearch/reference/5.0/ingest.html>`__ by adding an extra configuration inside elastic2-doc-manager.
+
+This configuration will include the elasticseach namespace and it's pipeline. The namespaces can include wildcards.
+
+Please note that non-wildcard namespaces have priority over the wildcard namespaces.
+
+**Configuration example**::
+
+  {
+    "docManager": "elastic2-doc-manager",
+    "targetURL": "localhost:9200",
+    "bulkSize": 1000,
+    "uniqueKey": "_id",
+    "args": {
+      "pipelines": {
+        "app.user": "custom-pipeline-1",
+        "app.*": "custom-pipeline-2"
+      }
+    }
+  }
 
 Development
 -----------

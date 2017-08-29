@@ -43,7 +43,7 @@ setup(name='elastic2-doc-manager',
       extras_require={
           'aws': ['boto3 >= 1.4.0', 'requests-aws-sign >= 0.1.2'],
           'elastic2': ['elasticsearch>=2.0.0,<3.0.0'],
-          'elastic5': ['elasticsearch>=5.0.0,<6.0.0']
+          'elastic5': ['elasticsearch>=5.4.0,<6.0.0']
       },
       packages=["mongo_connector", "mongo_connector.doc_managers"],
       license="Apache License, Version 2.0",
