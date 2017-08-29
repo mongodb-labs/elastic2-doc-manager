@@ -68,7 +68,7 @@ Please note that non-wildcard namespaces have priority over the wildcard namespa
 **Configuration example**::
 
   {
-    "docManager": "elastic2-doc-manager",
+    "docManager": "elastic2_doc_manager",
     "targetURL": "localhost:9200",
     "bulkSize": 1000,
     "uniqueKey": "_id",
