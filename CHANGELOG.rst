@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Version 0.4.0
+-------------
+
+- Support for Elasticsearch 5.x pipelines
+
 Version 0.3.0
 -------------
 
