@@ -297,7 +297,7 @@ class DocManager(DocManagerBase):
         """Insert a document into Elasticsearch."""
         index, doc_type = self._index_and_mapping(namespace)
         # No need to duplicate '_id' in source document
-        doc_id = u(doc.pop("_id"))
+        doc_id = u(doc.get("_id")) if doc.has_key("_id") else u(doc.get("ui"))
         metadata = {
             'ns': namespace,
             '_ts': timestamp
@@ -321,9 +321,6 @@ class DocManager(DocManagerBase):
         }
 
         self.index(action, meta_action, doc, update_spec)
-
-        # Leave _id, since it's part of the original document
-        doc['_id'] = doc_id
 
     @wrap_exceptions
     def bulk_upsert(self, docs, namespace, timestamp):
