@@ -514,6 +514,12 @@ class DocManager(DocManagerBase):
                 }
             })
 
+    def add_actions(self, actions):
+        """ Add custom actions directly to the action_buffer
+        """
+        with self.lock:
+            self.BulkBuffer.action_buffer.extend(actions)
+
     def index(self, action, meta_action, doc_source=None, update_spec=None):
         with self.lock:
             self.BulkBuffer.add_upsert(action, meta_action, doc_source, update_spec)
