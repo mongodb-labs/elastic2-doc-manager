@@ -297,33 +297,66 @@ class DocManager(DocManagerBase):
         """Insert a document into Elasticsearch."""
         index, doc_type = self._index_and_mapping(namespace)
         # No need to duplicate '_id' in source document
-        doc_id = u(doc.pop("_id"))
-        metadata = {
-            'ns': namespace,
-            '_ts': timestamp
-        }
+        status = doc.get("status",None)
+        isPublic = doc.get("isPublic",None)
+        if namespace == "vyng-ringtone-dev.Videotone":
+            if status == "enabled" and isPublic == True :
+                doc_id = u(doc.pop("_id"))
+                metadata = {
+                    'ns': namespace,
+                    '_ts': timestamp
+                }
 
-        # Index the source document, using lowercase namespace as index name.
-        action = {
-            '_op_type': 'index',
-            '_index': index,
-            '_type': doc_type,
-            '_id': doc_id,
-            '_source': self._formatter.format_document(doc)
-        }
-        # Index document metadata with original namespace (mixed upper/lower).
-        meta_action = {
-            '_op_type': 'index',
-            '_index': self.meta_index_name,
-            '_type': self.meta_type,
-            '_id': doc_id,
-            '_source': bson.json_util.dumps(metadata)
-        }
+                # Index the source document, using lowercase namespace as index name.
+                action = {
+                    '_op_type': 'index',
+                    '_index': index,
+                    '_type': doc_type,
+                    '_id': doc_id,
+                    '_source': self._formatter.format_document(doc)
+                }
+                # Index document metadata with original namespace (mixed upper/lower).
+                meta_action = {
+                    '_op_type': 'index',
+                    '_index': self.meta_index_name,
+                    '_type': self.meta_type,
+                    '_id': doc_id,
+                    '_source': bson.json_util.dumps(metadata)
+                }
 
-        self.index(action, meta_action, doc, update_spec)
+                self.index(action, meta_action, doc, update_spec)
 
-        # Leave _id, since it's part of the original document
-        doc['_id'] = doc_id
+                # Leave _id, since it's part of the original document
+                doc['_id'] = doc_id
+        else:
+            doc_id = u(doc.pop("_id"))
+            metadata = {
+                'ns': namespace,
+                '_ts': timestamp
+            }
+
+            # Index the source document, using lowercase namespace as index name.
+            action = {
+                '_op_type': 'index',
+                '_index': index,
+                '_type': doc_type,
+                '_id': doc_id,
+                '_source': self._formatter.format_document(doc)
+            }
+            # Index document metadata with original namespace (mixed upper/lower).
+            meta_action = {
+                '_op_type': 'index',
+                '_index': self.meta_index_name,
+                '_type': self.meta_type,
+                '_id': doc_id,
+                '_source': bson.json_util.dumps(metadata)
+            }
+
+            self.index(action, meta_action, doc, update_spec)
+
+            # Leave _id, since it's part of the original document
+            doc['_id'] = doc_id
+
 
     @wrap_exceptions
     def bulk_upsert(self, docs, namespace, timestamp):
@@ -332,29 +365,57 @@ class DocManager(DocManagerBase):
             doc = None
             for doc in docs:
                 # Remove metadata and redundant _id
-                index, doc_type = self._index_and_mapping(namespace)
-                doc_id = u(doc.pop("_id"))
-                document_action = {
-                    '_index': index,
-                    '_type': doc_type,
-                    '_id': doc_id,
-                    '_source': self._formatter.format_document(doc)
-                }
-                document_meta = {
-                    '_index': self.meta_index_name,
-                    '_type': self.meta_type,
-                    '_id': doc_id,
-                    '_source': {
-                        'ns': namespace,
-                        '_ts': timestamp
+                status = doc.get("status",None)
+                isPublic = doc.get("isPublic",None)
+                if namespace == "vyng-ringtone-dev.Videotone":
+                    if status == "enabled" and isPublic == True :
+                        index, doc_type = self._index_and_mapping(namespace)
+                        doc_id = u(doc.pop("_id"))
+                        document_action = {
+                            '_index': index,
+                            '_type': doc_type,
+                            '_id': doc_id,
+                            '_source': self._formatter.format_document(doc)
+                        }
+                        document_meta = {
+                            '_index': self.meta_index_name,
+                            '_type': self.meta_type,
+                            '_id': doc_id,
+                            '_source': {
+                                'ns': namespace,
+                                '_ts': timestamp
+                            }
+                        }
+                        yield document_action
+                        yield document_meta
+                    if doc is None:
+                        raise errors.EmptyDocsError(
+                            "Cannot upsert an empty sequence of "
+                            "documents into Elastic Search")
+                else:
+                    index, doc_type = self._index_and_mapping(namespace)
+                    doc_id = u(doc.pop("_id"))
+                    document_action = {
+                        '_index': index,
+                        '_type': doc_type,
+                        '_id': doc_id,
+                        '_source': self._formatter.format_document(doc)
                     }
-                }
-                yield document_action
-                yield document_meta
-            if doc is None:
-                raise errors.EmptyDocsError(
-                    "Cannot upsert an empty sequence of "
-                    "documents into Elastic Search")
+                    document_meta = {
+                        '_index': self.meta_index_name,
+                        '_type': self.meta_type,
+                        '_id': doc_id,
+                        '_source': {
+                            'ns': namespace,
+                            '_ts': timestamp
+                        }
+                    }
+                    yield document_action
+                    yield document_meta
+                if doc is None:
+                    raise errors.EmptyDocsError(
+                        "Cannot upsert an empty sequence of "
+                        "documents into Elastic Search")
         try:
             kw = {}
             if self.chunk_size > 0:
