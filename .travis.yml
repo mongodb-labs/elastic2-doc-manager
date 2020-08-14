@@ -11,12 +11,15 @@ env:
   global:
     - ELASTIC_2_URL=http://download.elastic.co/elasticsearch/release/org/elasticsearch/distribution/tar/elasticsearch/2.4.3/elasticsearch-2.4.3.tar.gz
     - ELASTIC_5_URL=http://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-5.1.1.tar.gz
+    - ELASTIC_6_URL=http://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-6.8.5.tar.gz
     # We need to manually set JAVA_HOME to Java 8 too.
     - JAVA_HOME=/usr/lib/jvm/java-8-oracle
 
 jobs:
   fast_finish: true
   include:
+  - python: &latest_py3 3.6
+    env: MONGODB=3.2.11 ELASTIC=6.8.5 ELASTIC_URL=$ELASTIC_6_URL TOXENV=elastic6
   - python: &latest_py3 3.6
     env: MONGODB=3.2.11 ELASTIC=5.1.1 ELASTIC_URL=$ELASTIC_5_URL TOXENV=elastic5
   - python: 3.4
