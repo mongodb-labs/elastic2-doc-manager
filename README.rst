@@ -50,6 +50,12 @@ For use with an Elasticsearch 5.x server, install with::
 
 .. note:: Version 0.3.0 added support for Elasticsearch 5.x.
 
+Elasticsearch 6.x
+-----------------
+
+For use with an Elasticsearch 6.x server, install with::
+
+  pip install 'elastic2-doc-manager[elastic6]'
 
 Amazon Elasticsearch Service
 ----------------------------

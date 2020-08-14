@@ -212,8 +212,15 @@ class DocManager(DocManagerBase):
 
         self.auto_commit_interval = auto_commit_interval
         self.auto_send_interval = kwargs.get("autoSendInterval", DEFAULT_SEND_INTERVAL)
+
+        # es6 deprecates support for multiple document types
+        # using default_type for consistency
+        # Will try and use multiple doc types only if explicity specified
+        self.create_multi_type = kwargs.get("createMultiType", False)
+        self.default_type = kwargs.get("defaultType", "_doc")
         self.meta_index_name = meta_index_name
-        self.meta_type = meta_type
+        self.meta_type = meta_type if self.create_multi_type else self.default_type
+
         self.unique_key = unique_key
         self.chunk_size = chunk_size
         self.has_attachment_mapping = False
@@ -226,7 +233,7 @@ class DocManager(DocManagerBase):
     def _index_and_mapping(self, namespace):
         """Helper method for getting the index and type from a namespace."""
         index, doc_type = namespace.split(".", 1)
-        return index.lower(), doc_type
+        return index.lower(), (self.default_type, doc_type)[self.create_multi_type]
 
     def stop(self):
         """Stop the auto-commit thread."""
@@ -258,6 +265,7 @@ class DocManager(DocManagerBase):
 
         if doc.get("create"):
             db, coll = self.command_helper.map_collection(db, doc["create"])
+            coll = (self.default_type, coll)[self.create_multi_type]
             if db and coll:
                 self.elastic.indices.put_mapping(
                     index=db.lower(), doc_type=coll, body={"_source": {"enabled": True}}
@@ -265,6 +273,7 @@ class DocManager(DocManagerBase):
 
         if doc.get("drop"):
             db, coll = self.command_helper.map_collection(db, doc["drop"])
+            coll = (self.default_type, coll)[self.create_multi_type]
             if db and coll:
                 # This will delete the items in coll, but not get rid of the
                 # mapping.
@@ -321,6 +330,7 @@ class DocManager(DocManagerBase):
     def upsert(self, doc, namespace, timestamp, update_spec=None):
         """Insert a document into Elasticsearch."""
         index, doc_type = self._index_and_mapping(namespace)
+
         # No need to duplicate '_id' in source document
         doc_id = str(doc.pop("_id"))
         metadata = {"ns": namespace, "_ts": timestamp}

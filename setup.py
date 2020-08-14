@@ -15,6 +15,7 @@ setuptools.setup(
         "aws": ["boto3 >= 1.4.0", "requests-aws-sign >= 0.1.2"],
         "elastic2": ["elasticsearch>=2.0.0,<3.0.0"],
         "elastic5": ["elasticsearch>=5.0.0,<6.0.0"],
+        "elastic6": ["elasticsearch>=6.2.0,<7.0.0"],
     },
     packages=["mongo_connector", "mongo_connector.doc_managers"],
     classifiers=[
